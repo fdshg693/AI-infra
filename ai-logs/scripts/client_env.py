@@ -35,8 +35,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent  # infra/ai-logs
 ENV_FILE = ROOT / ".env"
 
-# The old tools/infra path stays in the marker so blocks written before the move are still found.
-MARK_BEGIN = "# >>> ai-logs client env (managed by tools/infra/ai-logs/scripts/client_env.py) >>>"
+# Matched by prefix only: the rest of the begin line held the script's path at the time
+# the block was written, which changes whenever the script moves.
+MARK_BEGIN_PREFIX = "# >>> ai-logs client env"
 MARK_END = "# <<< ai-logs client env <<<"
 
 REQUIRED_KEYS = ("SERVER_IP", "OTLP_AUTH_TOKEN")
@@ -115,13 +116,22 @@ def remove_stale_profile_blocks():
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        if MARK_BEGIN in text and MARK_END in text:
-            start = text.index(MARK_BEGIN)
-            end = text.index(MARK_END) + len(MARK_END)
-            text = text[:start] + text[end:]
-            path.write_text(text, encoding="utf-8")
+        stripped = strip_managed_block(text)
+        if stripped is not None:
+            path.write_text(stripped, encoding="utf-8")
             removed.append(path)
     return removed
+
+
+def strip_managed_block(text):
+    """Return text without the managed block, or None if no complete block is found."""
+    start = text.find(MARK_BEGIN_PREFIX)
+    if start == -1:
+        return None
+    end = text.find(MARK_END, start)
+    if end == -1:
+        return None
+    return text[:start] + text[end + len(MARK_END) :]
 
 
 def _pwsh_escape(value):
