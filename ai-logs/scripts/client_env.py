@@ -13,32 +13,24 @@ CLAUDE_CODE_* / OTEL_* env vars documented in ../README.md ("収集対象ツー�
   purge   - remove those Windows User environment variables, and print
             unset statements for the CURRENT shell.
 
-install/purge used to append/remove a managed block in the shell profile
-(~/.bashrc or pwsh's $PROFILE), but that only takes effect for shells that
-source the profile at startup -- GUI-launched apps (e.g. VS Code opened from
-the Start Menu/taskbar, not from an already-profiled terminal) never see it.
-Windows User env vars apply to any new process regardless of how it was
-launched. Any leftover managed block from the old approach is cleaned up by
-install/purge too. Either way, already-running processes (an open VS Code
-window, an already-running `claude`) must be fully restarted to pick up the
-change -- env vars are only inherited at process creation.
+install/purge use Windows User env vars rather than the shell profile
+(~/.bashrc or pwsh's $PROFILE): a profile only takes effect for shells that
+source it at startup, so GUI-launched apps (e.g. VS Code opened from the Start
+Menu/taskbar) never see it, whereas Windows User env vars apply to any new
+process regardless of how it was launched. Already-running processes (an open
+VS Code window, an already-running `claude`) must still be fully restarted to
+pick up the change -- env vars are only inherited at process creation.
 
 Invoked via `just env-emit` / `just env-install` / `just env-purge` (see justfile).
 """
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # infra/ai-logs
 ENV_FILE = ROOT / ".env"
-
-# Matched by prefix only: the rest of the begin line held the script's path at the time
-# the block was written, which changes whenever the script moves.
-MARK_BEGIN_PREFIX = "# >>> ai-logs client env"
-MARK_END = "# <<< ai-logs client env <<<"
 
 REQUIRED_KEYS = ("SERVER_IP", "OTLP_AUTH_TOKEN")
 
@@ -86,54 +78,6 @@ def render_unset(shell, v):
     return "\n".join(f"Remove-Item Env:\\{k} -ErrorAction SilentlyContinue" for k in v.keys())
 
 
-def profile_path(shell):
-    if shell == "bash":
-        home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
-        if not home:
-            sys.exit("error: could not determine $HOME for bash profile lookup")
-        return Path(home) / ".bashrc"
-    # pwsh: ask pwsh itself for $PROFILE (exact path differs by version/host/OS)
-    try:
-        result = subprocess.run(
-            ["pwsh", "-NoProfile", "-Command", "$PROFILE"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
-        sys.exit(f"error: could not resolve pwsh $PROFILE: {e}")
-    return Path(result.stdout.strip())
-
-
-def remove_stale_profile_blocks():
-    """Remove any managed block left over from the old shell-profile approach."""
-    removed = []
-    for shell in ("bash", "pwsh"):
-        try:
-            path = profile_path(shell)
-        except SystemExit:
-            continue
-        if not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8")
-        stripped = strip_managed_block(text)
-        if stripped is not None:
-            path.write_text(stripped, encoding="utf-8")
-            removed.append(path)
-    return removed
-
-
-def strip_managed_block(text):
-    """Return text without the managed block, or None if no complete block is found."""
-    start = text.find(MARK_BEGIN_PREFIX)
-    if start == -1:
-        return None
-    end = text.find(MARK_END, start)
-    if end == -1:
-        return None
-    return text[:start] + text[end + len(MARK_END) :]
-
-
 def _pwsh_escape(value):
     # Escape for embedding inside a PowerShell double-quoted string literal.
     return value.replace("`", "``").replace("$", "`$").replace('"', '`"')
@@ -170,8 +114,6 @@ def cmd_install(args, v):
     print("set as persistent Windows User environment variables:")
     for k in v:
         print(f"  {k}")
-    for path in remove_stale_profile_blocks():
-        print(f"removed stale shell-profile block from {path} (superseded by the above)")
     print(
         "fully restart any already-running app that should pick this up "
         "(e.g. quit and reopen VS Code) -- already-running processes keep "
@@ -182,8 +124,6 @@ def cmd_install(args, v):
 def cmd_purge(args, v):
     unset_user_env_vars(v)
     print("removed from Windows User environment variables:", ", ".join(v.keys()))
-    for path in remove_stale_profile_blocks():
-        print(f"removed stale shell-profile block from {path}")
     print("run this in your CURRENT shell to unset the variables now:")
     print(render_unset(args.shell, v))
 

@@ -172,7 +172,7 @@ headers = { "Authorization" = "Bearer <OTLP_AUTH_TOKENの値>" }
 | `just verify-otlp-auth`         | OTLPエンドポイントのトークン必須化を確認（401期待）                                                                                                                                                 |
 | `just verify-grafana-private`   | Grafanaが外部非公開であることを確認                                                                                                                                                                 |
 | `just env-emit [bash\|pwsh]`    | Claude Code用OTLP環境変数をCURRENTシェル向けに出力（一時追加、evalして使う）                                                                                                                        |
-| `just env-install [bash\|pwsh]` | 上記をWindowsユーザー環境変数として設定（永続追加。旧バージョンがシェルプロファイルに書いた分は自動で削除される）                                                                                   |
+| `just env-install [bash\|pwsh]` | 上記をWindowsユーザー環境変数として設定（永続追加）                                                                                                                                                 |
 | `just env-purge [bash\|pwsh]`   | 上記のWindowsユーザー環境変数を削除（パージ）、CURRENTシェル向けのunset文も出力                                                                                                                     |
 
 ### 初期構築・再デプロイの流れ
