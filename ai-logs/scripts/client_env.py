@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manage the Claude Code -> ai-logs OTLP client env vars on this dev machine.
 
-Reads SERVER_IP / OTLP_AUTH_TOKEN from tools/infra/ai-logs/.env and derives the
+Reads SERVER_IP / OTLP_AUTH_TOKEN from infra/ai-logs/.env and derives the
 CLAUDE_CODE_* / OTEL_* env vars documented in ../README.md ("収集対象ツールの
 クライアント設定" section). Three subcommands:
 
@@ -32,9 +32,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent  # tools/infra/ai-logs
+ROOT = Path(__file__).resolve().parent.parent  # infra/ai-logs
 ENV_FILE = ROOT / ".env"
 
+# The old tools/infra path stays in the marker so blocks written before the move are still found.
 MARK_BEGIN = "# >>> ai-logs client env (managed by tools/infra/ai-logs/scripts/client_env.py) >>>"
 MARK_END = "# <<< ai-logs client env <<<"
 

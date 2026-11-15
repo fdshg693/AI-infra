@@ -64,7 +64,7 @@
 ## ディレクトリ構成
 
 ```text
-tools/infra/ai-logs/
+infra/ai-logs/
 ├── README.md                 # このファイル
 ├── references.md             # 調査メモ
 ├── docker/                   # VM にそのまま配置している構成一式
@@ -119,7 +119,7 @@ Loki + Grafana + OTel Collector を 1コア/1GB の VM で同時稼働させる�
 ### Claude Code
 
 - `CLAUDE_CODE_ENABLE_TELEMETRY=1` で有効化。ログ送信は `OTEL_LOGS_EXPORTER=otlp` + `OTEL_EXPORTER_OTLP_ENDPOINT=http://<VMのIP>:4317` + `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` + `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>"`
-- このリポジトリでは上記環境変数一式を手動で書く代わりに、`tools/infra/ai-logs/.env`（`SERVER_IP` / `OTLP_AUTH_TOKEN` を保持）を元に [`scripts/client_env.py`](scripts/client_env.py) が生成する。`just env-emit` / `just env-install` / `just env-purge` として呼び出す（詳細は下記「運用」参照）。`env-install`/`env-purge` はWindowsのユーザー環境変数（`HKCU\Environment`）を直接読み書きする方式で、シェルプロファイルへの追記ではないため、ターミナル経由ではなくスタートメニュー等からGUIで起動したアプリ（VS Codeなど）にも次回起動時から反映される
+- このリポジトリでは上記環境変数一式を手動で書く代わりに、`infra/ai-logs/.env`（`SERVER_IP` / `OTLP_AUTH_TOKEN` を保持）を元に [`scripts/client_env.py`](scripts/client_env.py) が生成する。`just env-emit` / `just env-install` / `just env-purge` として呼び出す（詳細は下記「運用」参照）。`env-install`/`env-purge` はWindowsのユーザー環境変数（`HKCU\Environment`）を直接読み書きする方式で、シェルプロファイルへの追記ではないため、ターミナル経由ではなくスタートメニュー等からGUIで起動したアプリ（VS Codeなど）にも次回起動時から反映される
 - 注意点: `OTEL_*` 系の環境変数は Bash ツールや hook・MCP サーバーなどの子プロセスには伝播しない（Claude Code CLI 自身のイベントのみが対象）
 - Loki に取り込まれた際にインデックス化されるラベルは `service_name`（値は `claude-code`）のみ。`claude_code.user_prompt` / `claude_code.api_request` 等の `event_name`、`session_id`、`model` などはインデックス化されない属性（structured metadata）としてクエリ可能
 
@@ -147,7 +147,7 @@ headers = { "Authorization" = "Bearer <OTLP_AUTH_TOKENの値>" }
 
 ### justfile レシピ一覧
 
-`cd tools/infra/ai-logs` してから実行する（`just -f tools/infra/ai-logs/justfile <recipe>` でリポジトリルートから直接呼ぶことも可能）。
+`cd infra/ai-logs` してから実行する（`just -f infra/ai-logs/justfile <recipe>` でリポジトリルートから直接呼ぶことも可能）。
 
 | レシピ                          | 内容                                                                                                                                                                                                |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -184,7 +184,7 @@ headers = { "Authorization" = "Bearer <OTLP_AUTH_TOKENの値>" }
 5. `just provision` でDocker導入 → `just vm-env` で `.env`（`OTLP_AUTH_TOKEN` / `GRAFANA_ADMIN_PASSWORD`）を生成 → `just deploy` で `docker/` を配置・起動
 6. `just verify-otlp-auth` / `just verify-grafana-private` / `just stats` で動作確認
 7. `just tunnel` を張った状態で `just show-secrets` を確認しつつ <http://localhost:3000> にログイン
-8. ローカル開発マシン側: `tools/infra/ai-logs/.env` を `.env.example` からコピーし、`just ip` / `just show-secrets` の値を埋めたうえで `just env-install [bash|pwsh]`（Claude Code用）、Codex CLIは `~/.codex/config.toml` を手動編集
+8. ローカル開発マシン側: `infra/ai-logs/.env` を `.env.example` からコピーし、`just ip` / `just show-secrets` の値を埋めたうえで `just env-install [bash|pwsh]`（Claude Code用）、Codex CLIは `~/.codex/config.toml` を手動編集
 9. アーカイブ: `just archive-provision` → `just archive-env` → `just deploy` → `just archive-backfill` → `just archive-list`（詳細は上記「アーカイブの使い方」）
 
 `docker/` の内容を更新した場合は `just deploy` を再実行するだけでよい（ローカルの `docker/.env` は転送せず、VM 上の `/opt/ai-logs/.env` は上書きしない）。ただし `loki-config.yaml` のような bind mount された設定ファイルだけの変更では Compose がコンテナを再作成しないため、`docker compose restart loki` を別途実行する。`archive-exporter` は Dockerfile があるので、スクリプトや依存を変えたあとの `deploy` はイメージをビルドし直す。
