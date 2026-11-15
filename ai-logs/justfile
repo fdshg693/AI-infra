@@ -2,7 +2,7 @@ set shell := ["C:/Program Files/Git/bin/bash.exe", "-uc"]
 
 # SSH key: ~/.ssh/ai_logs_ed25519 (dedicated key for the sakura cloud VM)
 # Prereq: terraform.tfvars must exist under terraform/ (see terraform/terraform.tfvars.example)
-# Recipes run with this directory (tools/infra/ai-logs) as cwd, so paths below are relative to it.
+# Recipes run with this directory (infra/ai-logs) as cwd, so paths below are relative to it.
 
 tf_dir := "terraform"
 docker_dir := "docker"

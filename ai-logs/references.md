@@ -10,7 +10,7 @@
   - `OTEL_LOGS_EXPORTER=otlp` / `OTEL_METRICS_EXPORTER=otlp` / `OTEL_TRACES_EXPORTER`（トレースは `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` も必要な beta 機能）
   - `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_PROTOCOL`（`grpc` / `http/json` / `http/protobuf`）、信号別に `_METRICS_ENDPOINT` / `_LOGS_ENDPOINT` / `_TRACES_ENDPOINT` で個別上書き可
   - 送信内容の詳細度は `OTEL_LOG_USER_PROMPTS` / `OTEL_LOG_ASSISTANT_RESPONSES` / `OTEL_LOG_TOOL_DETAILS` / `OTEL_LOG_TOOL_CONTENT` / `OTEL_LOG_RAW_API_BODIES` で個別制御
-  - メトリクス8種（`claude_code.session.count`, `claude_code.token.usage`, `claude_code.cost.usage` 等）、イベント20種超（`claude_code.user_prompt`, `claude_code.tool_result`, `claude_code.mcp_server_connection` 等）の一覧はリポジトリ内 [`.claude/skills/investigating-claude-code-logs/otel-reference.md`](../../../.claude/skills/investigating-claude-code-logs/otel-reference.md) に整理済み
+  - メトリクス8種（`claude_code.session.count`, `claude_code.token.usage`, `claude_code.cost.usage` 等）、イベント20種超（`claude_code.user_prompt`, `claude_code.tool_result`, `claude_code.mcp_server_connection` 等）の一覧はリポジトリ内 [`skills/plugins/cc-knowledge/skills/claude-code-debugging/otel-reference.md`](../../skills/plugins/cc-knowledge/skills/claude-code-debugging/otel-reference.md) に整理済み
   - **注意**: `OTEL_*` 環境変数は Bash ツール・hook・MCP サーバーなどの子プロセスには伝播しない（CLI本体のイベントのみ計装される）
   - 組織全体へ強制するには managed settings の `env` キーを使う（個人利用の本基盤では未使用）
 

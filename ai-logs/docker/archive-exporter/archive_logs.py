@@ -541,7 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pull = sub.add_parser("pull", help="download one UTC date into temp/")
     p_pull.add_argument("--date", required=True, help="UTC date YYYY-MM-DD")
     p_pull.add_argument(
-        "--dest", default="", help="directory (default: tools/infra/ai-logs/temp/ai-logs-archive)"
+        "--dest", default="", help="directory (default: infra/ai-logs/temp/ai-logs-archive)"
     )
     p_pull.set_defaults(func=cmd_pull)
 
