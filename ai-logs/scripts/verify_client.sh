@@ -2,10 +2,12 @@
 # Verify that the REAL `claude` CLI actually emits OTLP telemetry that reaches Loki.
 #
 # Unlike verify_pipeline.sh (which fakes a log via curl), this runs a real
-# one-shot `claude -p` invocation with the OTEL_* env vars passed explicitly
-# on the command line -- so the result doesn't depend on whether the calling
-# shell/terminal/VSCode window happens to have picked up the Windows User env
-# vars set by `just env-install` (a separate, easy-to-get-wrong concern).
+# one-shot `claude -p` invocation with the OTEL_* vars passed explicitly via a
+# temporary `--settings` file -- so the result doesn't depend on what
+# `just env-install` wrote to ~/.claude/settings.json. (Plain env vars on the
+# command line are NOT enough: the "env" key of ~/.claude/settings.json
+# overrides the process environment.) The file is 0600 and deleted on exit,
+# so the token never appears on a command line.
 #
 # Uses `claude --debug-file` to capture Claude Code's OWN internal telemetry
 # log (the "[3P telemetry]" lines), because Loki showing zero data is
@@ -26,8 +28,10 @@ fi
 SERVER_IP=$(grep -m1 '^SERVER_IP=' .env | cut -d= -f2-)
 OTLP_AUTH_TOKEN=$(grep -m1 '^OTLP_AUTH_TOKEN=' .env | cut -d= -f2-)
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/ai_logs_ed25519}"
+umask 077
 DEBUG_LOG=$(mktemp)
-trap 'rm -f "$DEBUG_LOG"' EXIT
+SETTINGS=$(mktemp --suffix=.json)
+trap 'rm -f "$DEBUG_LOG" "$SETTINGS"' EXIT
 
 if ! command -v claude >/dev/null 2>&1; then
     echo "error: 'claude' CLI not found on PATH" >&2
@@ -39,17 +43,13 @@ BEFORE=$(python "$(dirname "$0")/fetch_logs.py" --server-ip "$SERVER_IP" --ssh-k
 echo "$BEFORE"
 
 echo
-echo "[2/4] running a real 'claude -p' with OTEL_* passed explicitly (not relying on ambient shell env) ..."
+echo "[2/4] running a real 'claude -p' with OTEL_* passed via a temporary --settings file ..."
 echo "      (CLAUDE_CODE_CHILD_SESSION is unset so this looks like a top-level invocation even if"
 echo "       you're running this from inside another Claude Code session)"
-env -u CLAUDE_CODE_CHILD_SESSION \
-  CLAUDE_CODE_ENABLE_TELEMETRY=1 \
-  OTEL_LOGS_EXPORTER=otlp \
-  OTEL_EXPORTER_OTLP_PROTOCOL=grpc \
-  OTEL_EXPORTER_OTLP_ENDPOINT="http://${SERVER_IP}:4317" \
-  OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${OTLP_AUTH_TOKEN}" \
-  OTEL_LOGS_EXPORT_INTERVAL=1000 \
-  claude --debug-file "$DEBUG_LOG" -p --model haiku "reply with exactly the word: pong"
+jq -n --arg endpoint "https://${SERVER_IP}:4318" --arg headers "Authorization=Bearer ${OTLP_AUTH_TOKEN}"   '{env: {CLAUDE_CODE_ENABLE_TELEMETRY: "1", OTEL_LOGS_EXPORTER: "otlp",
+          OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf", OTEL_EXPORTER_OTLP_ENDPOINT: $endpoint,
+          OTEL_EXPORTER_OTLP_HEADERS: $headers, OTEL_LOGS_EXPORT_INTERVAL: "1000"}}' > "$SETTINGS"
+env -u CLAUDE_CODE_CHILD_SESSION   claude --settings "$SETTINGS" --debug-file "$DEBUG_LOG" -p --model haiku "reply with exactly the word: pong"
 
 echo
 echo "[3/4] Claude Code's own internal telemetry log ([3P telemetry] lines from --debug-file):"
@@ -69,6 +69,10 @@ if [ -n "$NEW" ]; then
     for svc in $NEW; do
         python "$(dirname "$0")/fetch_logs.py" --server-ip "$SERVER_IP" --ssh-key "$SSH_KEY" logs --since 5m --service "$svc"
     done
+elif grep -q "logs export: SUCCESS" "$DEBUG_LOG"; then
+    echo "SUCCESS: the client exported logs (\"logs export: SUCCESS\" in the debug log); no new service_name"
+    echo "because this service has been seen before. Recent entries:"
+    python "$(dirname "$0")/fetch_logs.py" --server-ip "$SERVER_IP" --ssh-key "$SSH_KEY" logs --since 2m --limit 20 --service claude-code
 elif grep -qi "URI error\|Telemetry init failed" "$DEBUG_LOG"; then
     echo "FAIL: telemetry init crashed before any network call was made -- see [3P telemetry] lines above."
     echo "Likely cause: OTEL_EXPORTER_OTLP_HEADERS contains a character (e.g. a literal '%') that breaks"

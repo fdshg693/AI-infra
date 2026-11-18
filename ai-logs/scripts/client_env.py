@@ -80,11 +80,14 @@ def load_env_file(path):
 def derive_vars(env):
     server_ip = env["SERVER_IP"]
     token = env["OTLP_AUTH_TOKEN"]
+    # OTLP/HTTP, not gRPC: the endpoint is an IP address with a Let's Encrypt IP certificate,
+    # and Claude Code's gRPC exporter (grpc-js) passes the IP as the TLS servername, which
+    # Node rejects (ERR_INVALID_ARG_VALUE). Node's https client sends no SNI for an IP and works.
     v = {
         "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
         "OTEL_LOGS_EXPORTER": "otlp",
-        "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
-        "OTEL_EXPORTER_OTLP_ENDPOINT": f"http://{server_ip}:4317",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": f"https://{server_ip}:4318",
         "OTEL_EXPORTER_OTLP_HEADERS": f"Authorization=Bearer {token}",
     }
     assert tuple(v) == MANAGED_KEYS
@@ -158,9 +161,11 @@ def remove_legacy_user_env_vars(keys):
     """Delete the Windows User env vars that older versions of this script set."""
     if os.name != "nt":
         return
+    # [NullString]::Value, not $null: PowerShell turns $null into "" for a .NET string
+    # parameter, which leaves the variable behind with an empty value instead of deleting it.
     stmts = "; ".join(
-        f'if ([Environment]::GetEnvironmentVariable("{k}", "User") -ne $null) '
-        f'{{ [Environment]::SetEnvironmentVariable("{k}", $null, "User"); Write-Output "{k}" }}'
+        f'if ($null -ne [Environment]::GetEnvironmentVariable("{k}", "User")) '
+        f'{{ [Environment]::SetEnvironmentVariable("{k}", [NullString]::Value, "User"); Write-Output "{k}" }}'
         for k in keys
     )
     try:
