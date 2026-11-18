@@ -54,16 +54,17 @@ provision:
 vm-env:
     ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) 'mkdir -p /opt/ai-logs && cd /opt/ai-logs && if [ ! -f .env ]; then echo "OTLP_AUTH_TOKEN=$(openssl rand -hex 32)" > .env && echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 18)" >> .env && echo "Generated new .env on the VM."; else echo ".env already exists on the VM, leaving it as-is."; fi'
 
-# Copy docker/ to the VM (staging dir; drop any local .env before merge so /opt/ai-logs/.env is kept) and start the stack
+# Copy docker/ to the VM (staging dir; drop any local .env before merge so /opt/ai-logs/.env is kept) and start the stack.
+# Also (re)writes SERVER_IP=<VM IP> in /opt/ai-logs/.env; Caddy uses it as the IP address on its certificate.
 deploy:
     scp -i {{ssh_key}} -r {{docker_dir}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address):/tmp/ai-logs-docker
-    ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) 'mkdir -p /opt/ai-logs && rm -f /tmp/ai-logs-docker/.env && cp -rf /tmp/ai-logs-docker/. /opt/ai-logs/ && rm -rf /tmp/ai-logs-docker && cd /opt/ai-logs && docker compose up -d --build'
+    ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) 'mkdir -p /opt/ai-logs && rm -f /tmp/ai-logs-docker/.env && cp -rf /tmp/ai-logs-docker/. /opt/ai-logs/ && rm -rf /tmp/ai-logs-docker && cd /opt/ai-logs && touch .env && sed -i "/^SERVER_IP=/d" .env && echo "SERVER_IP='"$(terraform -chdir={{tf_dir}} output -raw server_ip_address)"'" >> .env && docker compose up -d --build'
 
 # Show the generated secrets stored in /opt/ai-logs/.env on the VM
 show-secrets:
     ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) "cat /opt/ai-logs/.env"
 
-# SSH tunnel (foreground; Ctrl+C to stop). Default Grafana at localhost:3000. Args: [local] [remote] (e.g. `just tunnel 3001` or `just tunnel 4318 4318`)
+# SSH tunnel (foreground; Ctrl+C to stop). Default Grafana at localhost:3000. Args: [local] [remote] (e.g. `just tunnel 3001`)
 tunnel local="3000" remote="3000":
     @echo "Forwarding localhost:{{local}} -> VM localhost:{{remote}} (Ctrl+C to stop)"
     ssh -i {{ssh_key}} -N -L {{local}}:localhost:{{remote}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address)
@@ -90,7 +91,12 @@ verify-client:
 
 # Verify the OTLP endpoint rejects requests without a bearer token (expect HTTP 401)
 verify-otlp-auth:
-    curl -s -o /dev/null -w "HTTP %{http_code} (expect 401)\n" http://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4318/v1/logs
+    curl -s -o /dev/null -w "HTTP %{http_code} (expect 401)\n" https://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4318/v1/logs
+
+# Show the OTLP TLS certificate (subject / issuer / expiry; Let's Encrypt shortlived, ~160h) and check plaintext no longer reaches the collector
+verify-tls:
+    @ip=$(terraform -chdir={{tf_dir}} output -raw server_ip_address); for port in 4317 4318; do echo "--- :$port"; echo | openssl s_client -connect $ip:$port -alpn h2 2>/dev/null | openssl x509 -noout -subject -issuer -enddate -ext subjectAltName; done
+    @echo "--- plaintext http://<IP>:4318 (expect HTTP 400 from Caddy, not the collector's 401)"; curl -s -m 5 -o /dev/null -w "HTTP %{http_code}\n" http://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4318/v1/logs || echo "connection failed"
 
 # Verify Grafana's port 3000 is NOT reachable from outside the VM (expect a connection failure/timeout)
 verify-grafana-private:

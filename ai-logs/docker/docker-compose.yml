@@ -7,10 +7,9 @@ services:
       - .env   # OTLP_AUTH_TOKEN=<ランダムトークン> を記載。.gitignore対象、VM上にのみ置く
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    # 4317/4318 はホストに公開しない。外部からは caddy が TLS で受けてコンテナ間ネットワークで渡す
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "13133:13133" # health_check
+      - "127.0.0.1:13133:13133" # health_check（ホストのループバックのみ）
     healthcheck:
       test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol/config.yaml"]
       interval: 30s
@@ -20,6 +19,24 @@ services:
     restart: unless-stopped
     depends_on:
       - loki
+
+  caddy:
+    image: caddy:2.11.9-alpine
+    container_name: ai-logs-caddy
+    environment:
+      SERVER_IP: ${SERVER_IP:?SERVER_IP must be set in .env (just deploy writes it)}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data     # 証明書と ACME アカウント。消すと取り直しになりレート制限に近づくので消さない
+      - caddy-config:/config
+    ports:
+      - "80:80"       # ACME HTTP-01（証明書の取得・更新）。閉じると更新できない
+      - "4317:4317"   # OTLP gRPC over TLS
+      - "4318:4318"   # OTLP HTTP over TLS
+    restart: unless-stopped
+    depends_on:
+      - otel-collector
 
   loki:
     image: grafana/loki:3.5.0
@@ -60,3 +77,5 @@ services:
 volumes:
   loki-data:
   grafana-data:
+  caddy-data:
+  caddy-config:
