@@ -14,7 +14,7 @@ resource "sakura_server" "ai_logs" {
   name        = "ai-logs"
   disks       = [sakura_disk.ai_logs.id]
   core        = 1
-  memory      = 1
+  memory      = 2
   description = "AI logs infra MVP (OTel Collector + Loki + Grafana)"
   tags        = ["ai-logs", "mvp"]
 
