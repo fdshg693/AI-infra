@@ -9,6 +9,7 @@ docker_dir := "docker"
 scripts_dir := "scripts"
 ssh_key := "~/.ssh/ai_logs_ed25519"
 archive_script := docker_dir + "/archive-exporter/archive_logs.py"
+archive_reqs := docker_dir + "/archive-exporter/requirements.txt"
 # Azure Blob archive. Do NOT use the skills-site SWA RG (rg-ai-skill-catalog).
 archive_rg := env_var_or_default("AI_LOGS_ARCHIVE_RG", "rg-ai-logs-archive")
 archive_account := env_var_or_default("AI_LOGS_ARCHIVE_ACCOUNT", "stailogsfdshg693")
@@ -115,13 +116,13 @@ archive-export date:
 archive-backfill *args:
     ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) "cd /opt/ai-logs && docker compose run --rm archive-exporter backfill {{args}}"
 
-# List archived UTC dates and _status markers (local; needs azure-storage-blob)
+# List archived UTC dates and _status markers (local; uv pulls in azure-storage-blob on the fly)
 archive-list:
-    uv run python {{archive_script}} list
+    uv run --with-requirements {{archive_reqs}} python {{archive_script}} list
 
 # Download one UTC date into temp/ai-logs-archive/ as .jsonl (local). e.g. `just archive-pull 2026-09-11`
 archive-pull date:
-    uv run python {{archive_script}} pull --date {{date}}
+    uv run --with-requirements {{archive_reqs}} python {{archive_script}} pull --date {{date}}
 
 # --- Local dev machine client env (Claude Code OTLP export) ---
 # Prereq: .env must exist in this directory with SERVER_IP / OTLP_AUTH_TOKEN filled in

@@ -112,7 +112,7 @@ Loki + Grafana + OTel Collector を 1コア/1GB の VM で同時稼働させる�
 - 利用者は自分一人のみを想定
 - Grafana: `docker-compose.yml` でポートを `127.0.0.1:3000:3000` にバインドし外部非公開。閲覧するときは `just tunnel` でSSHトンネルを張ってアクセスする
 - OTLP 受信エンドポイント（Collector の gRPC/HTTP receiver）は `bearertokenauth` extension でトークン必須化済み。トークンなしのリクエストは 401 になる（`just verify-otlp-auth` で確認可能）
-- **既知の制約**: `bearertokenauth` extension は本来TLSが有効な状態での利用が前提だが、本basisではVMにドメイン・TLS証明書を用意していないため、トークンは平文HTTP上を流れる（下記オープン課題参照）
+- **既知の制約**: `bearertokenauth` extension は本来TLSが有効な状態での利用が前提だが、本基盤ではVMにドメイン・TLS証明書を用意していないため、トークンは平文HTTP上を流れる（下記オープン課題参照）
 
 ## 収集対象ツールのクライアント設定
 
@@ -231,7 +231,7 @@ Loki の保持は `docker/loki-config.yaml` の `compactor` + `limits_config` �
 6. `just archive-list` で日付とマーカーの差を確認。見るときは `just archive-pull 2026-09-11`（UTC）→ `temp/ai-logs-archive/2026-09-11.jsonl` を `jq` / エディタで開く
 7. ここまで揃ってから Loki の保持期間を入れる（上記「ログの保持期間」）
 
-資格情報が無いときは `serve` は exit せずエラーを出して次の 01:15 UTC まで待つ（`restart: unless-stopped` の再起動ループを避ける）。ローカルの `archive-list` / `archive-pull` は `uv run python` 経由（リポジトリの `.venv` に `azure-storage-blob` が入っていること。無ければ `uv pip install -r docker/archive-exporter/requirements.txt`）。
+資格情報が無いときは `serve` は exit せずエラーを出して次の 01:15 UTC まで待つ（`restart: unless-stopped` の再起動ループを避ける）。ローカルの `archive-list` / `archive-pull` は `uv run --with-requirements docker/archive-exporter/requirements.txt` 経由で、`azure-storage-blob` を uv がその場で用意する（`.venv` への事前インストールは不要）。
 
 ## 既知の注意点・ハマりどころ
 
