@@ -68,6 +68,9 @@
 infra/ai-logs/
 ├── README.md                 # このファイル
 ├── references.md             # 調査メモ
+├── docs/
+│   ├── client-setup.md        # クライアント側（Claude Code・VS Code・WSL）のセットアップと動作確認
+│   └── telemetry-data.md      # Claude Code から何が送られ、本基盤に何が残るか
 ├── docker/                   # VM にそのまま配置している構成一式
 │   ├── docker-compose.yml
 │   ├── Caddyfile              # OTLP の TLS 終端（Let's Encrypt の IP 証明書）
@@ -124,11 +127,10 @@ Loki + Grafana + OTel Collector を 1コア/1GB の VM で同時稼働させる�
 
 ### Claude Code
 
-- `CLAUDE_CODE_ENABLE_TELEMETRY=1` で有効化。ログ送信は `OTEL_LOGS_EXPORTER=otlp` + `OTEL_EXPORTER_OTLP_ENDPOINT=https://<VMのIP>:4318` + `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` + `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>"`（gRPC は IP 証明書の TLS で失敗するので使わない。上記「セキュリティ・アクセス制御」）
-- このリポジトリでは上記環境変数一式を手動で書く代わりに、`infra/ai-logs/.env`（`SERVER_IP` / `OTLP_AUTH_TOKEN` を保持）を元に [`scripts/client_env.py`](scripts/client_env.py) が生成する。`just env-emit` / `just env-install` / `just env-purge` として呼び出す（詳細は下記「運用」参照）。`env-install`/`env-purge` は `~/.claude/settings.json` の `env` キーにマージ／削除する（既存キーは保持し、書く前に `settings.json.ai-logs.bak` を残す。値は画面に出さない）。既定の `target=all` で Windows と WSL（既定 `Ubuntu-24.04`）の両方に入れる。WSL へは `wsl.exe` の標準入力で JSON を渡して WSL 側の `jq` でマージするので、トークンはコマンドライン引数に載らない
-- `~/.claude/settings.json` の `env` を使うのは、CLI と VS Code 拡張で共有され、起動のされ方に関係なく効くため。以前の版が書いていた Windows ユーザー環境変数は、VS Code の起動のされ方次第で拡張に届かず、WSL にも伝わらなかった。`env-install` / `env-purge` は旧方式のユーザー環境変数が残っていれば消す
-- 注意点: `OTEL_*` 系の環境変数は Bash ツールや hook・MCP サーバーなどの子プロセスには伝播しない（Claude Code CLI 自身のイベントのみが対象）
-- Loki に取り込まれた際にインデックス化されるラベルは `service_name`（値は `claude-code`）のみ。`claude_code.user_prompt` / `claude_code.api_request` 等の `event_name`、`session_id`、`model` などはインデックス化されない属性（structured metadata）としてクエリ可能
+- 送信先は `https://<VMのIP>:4318`、プロトコルは OTLP/HTTP（`http/protobuf`）。gRPC は IP 証明書の TLS で失敗するので使わない（上記「セキュリティ・アクセス制御」）
+- 変数は `infra/ai-logs/.env`（`SERVER_IP` / `OTLP_AUTH_TOKEN`）から [`scripts/client_env.py`](scripts/client_env.py) が作り、`just env-install` で Windows と WSL の `~/.claude/settings.json` の `env` に入れる。CLI と VS Code 拡張で共有され、起動のされ方に関係なく効くため、Windows のユーザー環境変数や `claudeCode.environmentVariables` は使わない
+- 手順・VS Code と WSL の確認・動作確認・トラブルシュートは [docs/client-setup.md](docs/client-setup.md)
+- 何が送られ、Loki に何が残るか（イベント・属性・本文の伏せられ方・LogQL の例）は [docs/telemetry-data.md](docs/telemetry-data.md)。Loki でインデックス化されるラベルは `service_name`（`claude-code`）だけで、ほかの属性は structured metadata
 
 ### Codex CLI
 
@@ -195,7 +197,7 @@ headers = { "Authorization" = "Bearer <OTLP_AUTH_TOKENの値>" }
 5. `just provision` でDocker導入 → `just vm-env` で `.env`（`OTLP_AUTH_TOKEN` / `GRAFANA_ADMIN_PASSWORD`）を生成 → `just deploy` で `docker/` を配置・起動
 6. `just verify-tls` / `just verify-otlp-auth` / `just verify-grafana-private` / `just stats` で動作確認（初回の証明書取得は数秒。試行を繰り返すときは VM の `.env` に `ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory` を入れて staging で試し、通ったら消して `docker compose up -d caddy`。volume `caddy-data` は消さない）
 7. `just tunnel` を張った状態で `just show-secrets` を確認しつつ <http://localhost:3000> にログイン
-8. ローカル開発マシン側: `infra/ai-logs/.env` を `.env.example` からコピーし、`just ip` / `just show-secrets` の値を埋めたうえで `just env-install`（Claude Code用。Windows と WSL）、Codex CLIは `~/.codex/config.toml` を手動編集
+8. ローカル開発マシン側: [docs/client-setup.md](docs/client-setup.md) の手順で `.env` を用意して `just env-install`（Claude Code 用。Windows と WSL）。Codex CLI は `~/.codex/config.toml` を手動編集
 9. アーカイブ: `just archive-provision` → `just archive-env` → `just deploy` → `just archive-backfill` → `just archive-list`（詳細は上記「アーカイブの使い方」）
 
 `docker/` の内容を更新した場合は `just deploy` を再実行するだけでよい（ローカルの `docker/.env` は転送せず、VM 上の `/opt/ai-logs/.env` は上書きしない）。ただし `loki-config.yaml` / `Caddyfile` のような bind mount された設定ファイルだけの変更では Compose がコンテナを再作成しないため、`docker compose restart loki`（または `caddy`）を別途実行する。`archive-exporter` は Dockerfile があるので、スクリプトや依存を変えたあとの `deploy` はイメージをビルドし直す。
@@ -254,7 +256,7 @@ Loki の保持は `docker/loki-config.yaml` の `compactor` + `limits_config` �
 - Caddy の `default_sni` は外せない。IP 宛ての接続は SNI を送らず、コンテナ内のローカルアドレスは compose ネットワークの IP なので、無いと証明書が見つからず TLS ハンドシェイクが失敗する
 - `~/.claude/settings.json` の `env` はプロセスの環境変数より優先される。単発で別の送信先を試すときは、環境変数ではなく `claude --settings <一時ファイル>` で渡す（`verify_client.sh` がそうしている）
 - PowerShell で `[Environment]::SetEnvironmentVariable(name, $null, "User")` を呼ぶと `$null` が空文字になり、変数は消えずに空値で残る。消すときは `[NullString]::Value` を渡す（`client_env.py` の旧方式ユーザー環境変数の削除）
-- OTLPログの属性からLokiラベルへの変換規則はLoki/Collectorのバージョンに依存する。実データで確認したラベルは上記「収集対象ツールのクライアント設定」の通り（`service_name` のみインデックス化）
+- OTLPログの属性からLokiラベルへの変換規則はLoki/Collectorのバージョンに依存する。実データで確認したラベルは [docs/telemetry-data.md](docs/telemetry-data.md#loki-での見え方) の通り（`service_name` のみインデックス化）
 - `loki-config.yaml` / `Caddyfile` は bind mount なので、それだけを変えたときは `just deploy` だけでは反映されない（`docker compose restart loki` / `caddy` が必要）
 - Loki の `reject_old_samples_max_age` は取り込み拒否であり保持期間ではない。保持は Compactor の `retention_enabled` + `retention_period`
 - Grafana 12.4.10 では Explore の Loki Label ドロップダウンが選択中の時間範囲に追従する（10.2.3 では範囲を変えても Label が空のまま残ることがあった）
