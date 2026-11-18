@@ -87,10 +87,13 @@ infra/ai-logs/
 │   ├── variables.tf
 │   ├── main.tf
 │   ├── outputs.tf
-│   └── terraform.tfvars.example   # 実際の値は terraform.tfvars（gitignore対象）
+│   ├── terraform.tfvars.example   # 実際の値は terraform.tfvars（gitignore対象）
+│   └── archive/               # Azure Blob アーカイブ（RG・ストレージアカウント・コンテナ）の IaC。state は VM と別
+│       ├── provider.tf / variables.tf / main.tf / outputs.tf
+│       └── terraform.tfvars.example   # subscription_id・storage_account_name（実体は gitignore）
 ├── scripts/
 │   ├── client_env.py          # Claude Code の OTLP 設定を ~/.claude/settings.json（Windows・WSL）へ入れるスクリプト（justfileから呼ばれる）
-│   └── archive_azure.sh       # archive-provision / archive-env の az CLI 実体（ローカル実行。VM にはコピーしない）
+│   └── archive_azure.sh       # archive-env の実体（Terraform の output の接続文字列を VM とローカルの .env へ書く。VM にはコピーしない）
 ├── justfile                   # Terraform・VMセットアップ・デプロイ・動作確認のレシピ集
 └── .env.example                # ローカル開発マシン用（SERVER_IP, OTLP_AUTH_TOKEN, Azure Blob）
 ```
@@ -161,34 +164,37 @@ headers = { "Authorization" = "Bearer <OTLP_AUTH_TOKENの値>" }
 
 `cd infra/ai-logs` してから実行する（`just -f infra/ai-logs/justfile <recipe>` でリポジトリルートから直接呼ぶことも可能）。
 
-| レシピ                               | 内容                                                                                                                                                                                                                                                                 |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just tf-init`                       | `terraform init`                                                                                                                                                                                                                                                     |
-| `just tf-plan`                       | `terraform plan`                                                                                                                                                                                                                                                     |
-| `just tf-apply`                      | `terraform apply`                                                                                                                                                                                                                                                    |
-| `just tf-destroy`                    | `terraform destroy`                                                                                                                                                                                                                                                  |
-| `just ip`                            | VMのグローバルIPを表示                                                                                                                                                                                                                                               |
-| `just ssh`                           | VMにSSH接続                                                                                                                                                                                                                                                          |
-| `just provision`                     | VM上にDocker / Docker Composeをインストール（初回のみ、冪等）                                                                                                                                                                                                        |
-| `just vm-env`                        | VM上に `/opt/ai-logs/.env` を生成（既存があれば何もしない）                                                                                                                                                                                                          |
-| `just deploy`                        | `docker/` をVMへ転送し `docker compose up -d --build`（ローカル `docker/.env` は載せない。VM の `.env` は上書きせず、`SERVER_IP=<VMのIP>` の行だけ書き直す。`loki-config.yaml` / `Caddyfile` だけを変えたときは別途 `docker compose restart loki` / `caddy` が必要） |
-| `just archive-provision`             | Azure にアーカイブ用 RG + LRS Cool ストレージアカウント + コンテナを作成（skills-site の SWA 用 RG とは別）                                                                                                                                                          |
-| `just archive-env`                   | 既存の VM `/opt/ai-logs/.env` とローカル `.env` へ Blob 接続文字列を追記（`vm-env` は既存ファイルを触らない）                                                                                                                                                        |
-| `just archive-export <date>`         | VM 上で 1 UTC 日分をワンショット export（`docker compose run --rm`）                                                                                                                                                                                                 |
-| `just archive-backfill [... ]`       | VM 上で既存 Loki ログを日付単位でバックフィル（直列。`--from` / `--to` を渡せる）                                                                                                                                                                                    |
-| `just archive-list`                  | ローカルから Blob の日付と `_status` マーカーを一覧                                                                                                                                                                                                                  |
-| `just archive-pull <date>`           | ローカルの `temp/ai-logs-archive/` へ 1 UTC 日分を落とす（gitignore 済み。リポジトリにログ本文を入れない）                                                                                                                                                           |
-| `just show-secrets`                  | VM上の `/opt/ai-logs/.env` の中身を表示                                                                                                                                                                                                                              |
-| `just tunnel [local] [remote]`       | SSHトンネル（既定は Grafana の `localhost:3000`）。例: `just tunnel 3001`（ローカルだけ変更）                                                                                                                                                                        |
-| `just stats`                         | VM上の `docker stats --no-stream`                                                                                                                                                                                                                                    |
-| `just verify-otlp-auth`              | OTLPエンドポイント（`https://<IP>:4318`）のトークン必須化を確認（401期待。証明書の検証込み）                                                                                                                                                                         |
-| `just verify-tls`                    | 4318 の証明書（発行者・期限・SAN の IP）を表示し、4317 が閉じていること・平文 HTTP が Collector に届かない（Caddy の 400）ことを確認                                                                                                                                 |
-| `just verify-pipeline`               | 合成ログを `https://<IP>:4318/v1/logs` に送り Loki まで届くかを確認（AI CLI を使わない）                                                                                                                                                                             |
-| `just verify-client`                 | 実際の `claude -p` を一時 `--settings` ファイル付きで実行し、送信できたかを debug ログと Loki で確認                                                                                                                                                                 |
-| `just verify-grafana-private`        | Grafanaが外部非公開であることを確認                                                                                                                                                                                                                                  |
-| `just env-emit [bash\|pwsh]`         | Claude Code用OTLP環境変数をCURRENTシェル向けに出力（一時追加、evalして使う）                                                                                                                                                                                         |
-| `just env-install [target] [distro]` | 上記を `~/.claude/settings.json` の `env` にマージ（永続追加。target は `all`（既定）/ `windows` / `wsl`、distro の既定は `Ubuntu-24.04`）                                                                                                                           |
-| `just env-purge [target] [distro]`   | 上記のキーを `~/.claude/settings.json` の `env` から削除（パージ。旧方式の Windows ユーザー環境変数も消す）                                                                                                                                                          |
+| レシピ                                             | 内容                                                                                                                                                                                                                                                                 |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just tf-init`                                     | `terraform init`                                                                                                                                                                                                                                                     |
+| `just tf-plan`                                     | `terraform plan`                                                                                                                                                                                                                                                     |
+| `just tf-apply`                                    | `terraform apply`                                                                                                                                                                                                                                                    |
+| `just tf-destroy`                                  | `terraform destroy`                                                                                                                                                                                                                                                  |
+| `just ip`                                          | VMのグローバルIPを表示                                                                                                                                                                                                                                               |
+| `just ssh`                                         | VMにSSH接続                                                                                                                                                                                                                                                          |
+| `just provision`                                   | VM上にDocker / Docker Composeをインストール（初回のみ、冪等）                                                                                                                                                                                                        |
+| `just vm-env`                                      | VM上に `/opt/ai-logs/.env` を生成（既存があれば何もしない）                                                                                                                                                                                                          |
+| `just deploy`                                      | `docker/` をVMへ転送し `docker compose up -d --build`（ローカル `docker/.env` は載せない。VM の `.env` は上書きせず、`SERVER_IP=<VMのIP>` の行だけ書き直す。`loki-config.yaml` / `Caddyfile` だけを変えたときは別途 `docker compose restart loki` / `caddy` が必要） |
+| `just archive-tf-init`                             | `terraform/archive/` で `terraform init`（Azure のアーカイブ用。VM の `terraform/` とは state が別）                                                                                                                                                                 |
+| `just archive-tf-plan`                             | `terraform/archive/` で `terraform plan`。apply は「0 to destroy」のときだけ                                                                                                                                                                                         |
+| `just archive-tf-apply`                            | `terraform/archive/` で `terraform apply`（RG + LRS Cool ストレージアカウント + コンテナ。skills-site の SWA 用 RG とは別）                                                                                                                                          |
+| `just archive-env`                                 | Terraform の output の Blob 接続文字列を、既存の VM `/opt/ai-logs/.env` とローカル `.env` へ追記（`vm-env` は既存ファイルを触らない）                                                                                                                                |
+| `just archive-export <date>`                       | VM 上で 1 UTC 日分をワンショット export（`docker compose run --rm`）                                                                                                                                                                                                 |
+| `just archive-backfill [... ]`                     | VM 上で既存 Loki ログを日付単位でバックフィル（直列。`--from` / `--to` を渡せる）                                                                                                                                                                                    |
+| `just archive-list [--from D] [--to D]`            | ローカルから Blob の日付・`_status` マーカー・サイズを一覧                                                                                                                                                                                                           |
+| `just archive-pull <date>\|--from D --to D\|--all` | ローカルの `temp/ai-logs-archive/` へ UTC 日付を落として `.jsonl` に展開（gz は ETag でキャッシュ。gitignore 済み。リポジトリにログ本文を入れない）                                                                                                                  |
+| `just archive-search [...]`                        | アーカイブをローカルのキャッシュ経由で検索（`--service`・`--label k=v`・`--grep`・`--since`/`--until`・`--jst`・`--json`。下記「アーカイブの使い方」）                                                                                                               |
+| `just show-secrets`                                | VM上の `/opt/ai-logs/.env` の中身を表示                                                                                                                                                                                                                              |
+| `just tunnel [local] [remote]`                     | SSHトンネル（既定は Grafana の `localhost:3000`）。例: `just tunnel 3001`（ローカルだけ変更）                                                                                                                                                                        |
+| `just stats`                                       | VM上の `docker stats --no-stream`                                                                                                                                                                                                                                    |
+| `just verify-otlp-auth`                            | OTLPエンドポイント（`https://<IP>:4318`）のトークン必須化を確認（401期待。証明書の検証込み）                                                                                                                                                                         |
+| `just verify-tls`                                  | 4318 の証明書（発行者・期限・SAN の IP）を表示し、4317 が閉じていること・平文 HTTP が Collector に届かない（Caddy の 400）ことを確認                                                                                                                                 |
+| `just verify-pipeline`                             | 合成ログを `https://<IP>:4318/v1/logs` に送り Loki まで届くかを確認（AI CLI を使わない）                                                                                                                                                                             |
+| `just verify-client`                               | 実際の `claude -p` を一時 `--settings` ファイル付きで実行し、送信できたかを debug ログと Loki で確認                                                                                                                                                                 |
+| `just verify-grafana-private`                      | Grafanaが外部非公開であることを確認                                                                                                                                                                                                                                  |
+| `just env-emit [bash\|pwsh]`                       | Claude Code用OTLP環境変数をCURRENTシェル向けに出力（一時追加、evalして使う）                                                                                                                                                                                         |
+| `just env-install [target] [distro]`               | 上記を `~/.claude/settings.json` の `env` にマージ（永続追加。target は `all`（既定）/ `windows` / `wsl`、distro の既定は `Ubuntu-24.04`）                                                                                                                           |
+| `just env-purge [target] [distro]`                 | 上記のキーを `~/.claude/settings.json` の `env` から削除（パージ。旧方式の Windows ユーザー環境変数も消す）                                                                                                                                                          |
 
 ### 初期構築・再デプロイの流れ
 
@@ -200,7 +206,7 @@ headers = { "Authorization" = "Bearer <OTLP_AUTH_TOKENの値>" }
 6. `just verify-tls` / `just verify-otlp-auth` / `just verify-grafana-private` / `just stats` で動作確認（初回の証明書取得は数秒。試行を繰り返すときは VM の `.env` に `ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory` を入れて staging で試し、通ったら消して `docker compose up -d caddy`。volume `caddy-data` は消さない）
 7. `just tunnel` を張った状態で `just show-secrets` を確認しつつ <http://localhost:3000> にログイン
 8. ローカル開発マシン側: [docs/client-setup.md](docs/client-setup.md) の手順で `.env` を用意して `just env-install`（Claude Code 用。Windows と WSL）。Codex CLI は `~/.codex/config.toml` を手動編集
-9. アーカイブ: `just archive-provision` → `just archive-env` → `just deploy` → `just archive-backfill` → `just archive-list`（詳細は上記「アーカイブの使い方」）
+9. アーカイブ: `terraform/archive/terraform.tfvars` を作る → `just archive-tf-init` → `just archive-tf-apply` → `just archive-env` → `just deploy` → `just archive-backfill` → `just archive-list`（詳細は上記「アーカイブの使い方」）
 
 `docker/` の内容を更新した場合は `just deploy` を再実行するだけでよい（ローカルの `docker/.env` は転送せず、VM 上の `/opt/ai-logs/.env` は上書きしない）。ただし `loki-config.yaml` / `Caddyfile` のような bind mount された設定ファイルだけの変更では Compose がコンテナを再作成しないため、`docker compose restart loki`（または `caddy`）を別途実行する。`archive-exporter` は Dockerfile があるので、スクリプトや依存を変えたあとの `deploy` はイメージをビルドし直す。
 
@@ -239,14 +245,31 @@ Loki の保持は `docker/loki-config.yaml` の `compactor` + `limits_config` �
 セットアップ:
 
 1. `az login` 済みであること（skills-site と同じサブスクリプションでよいが、**SWA 用 RG `rg-ai-skill-catalog` には足さない**）
-2. `just archive-provision` — RG `rg-ai-logs-archive` + ストレージアカウント + コンテナ `ai-logs`
-3. `just archive-env` — VM の `/opt/ai-logs/.env` とローカル `.env` へ接続文字列を追記（`just vm-env` は既存 `.env` を触らない）
-4. `just deploy` — `archive-exporter` イメージを VM でビルドして常駐 `serve` を起動
-5. `just archive-backfill` — 既存 Loki ログを一度バックフィル（1GB VM 向けに直列。未完了なら保持期間の変更はしない）
-6. `just archive-list` で日付とマーカーの差を確認。見るときは `just archive-pull 2026-09-11`（UTC）→ `temp/ai-logs-archive/2026-09-11.jsonl` を `jq` / エディタで開く
-7. ここまで揃ってから Loki の保持期間を入れる（上記「ログの保持期間」）
+2. `terraform/archive/terraform.tfvars.example` を `terraform.tfvars` にコピーし、`subscription_id`・`storage_account_name` を埋める
+3. `just archive-tf-init` → `just archive-tf-plan` → `just archive-tf-apply` — RG `rg-ai-logs-archive` + ストレージアカウント + コンテナ `ai-logs`
+4. `just archive-env` — Terraform の output の接続文字列を VM の `/opt/ai-logs/.env` とローカル `.env` へ追記（`just vm-env` は既存 `.env` を触らない）
+5. `just deploy` — `archive-exporter` イメージを VM でビルドして常駐 `serve` を起動
+6. `just archive-backfill` — 既存 Loki ログを一度バックフィル（1GB VM 向けに直列。未完了なら保持期間の変更はしない）
+7. `just archive-list` で日付とマーカーの差を確認。見るときは下記「アーカイブの検索・ダウンロード」
+8. ここまで揃ってから Loki の保持期間を入れる（上記「ログの保持期間」）
+
+Azure 側のリソースは `terraform/archive/` が正本。`az` やポータルで直接変えない（次の plan で差分になる）。もとは `az` CLI（旧 `just archive-provision`）で作り、2026-11-18 に `import` ブロックで取り込んだ（plan は 3 import / 2 in-place（tag `managedBy` と `public_network_access`）/ 0 destroy、Blob はそのまま）。ストレージアカウントとコンテナは `prevent_destroy`。`terraform.tfstate` はアカウントキーを平文で含む（gitignore 済み。コミットしない）。
 
 資格情報が無いときは `serve` は exit せずエラーを出して次の 01:15 UTC まで待つ（`restart: unless-stopped` の再起動ループを避ける）。ローカルの `archive-list` / `archive-pull` は `uv run --with-requirements docker/archive-exporter/requirements.txt` 経由で、`azure-storage-blob` を uv がその場で用意する（`.venv` への事前インストールは不要）。
+
+#### アーカイブの検索・ダウンロード
+
+```sh
+just archive-search --jst --date 2026-11-17                         # JST の 11/17（UTC の 2 日分を読んで時刻で絞る）
+just archive-search --from 2026-11-01 --grep 'api_request|tool_result' --label terminal_type=vscode
+just archive-search --all --json --label event_name=api_request | jq -r .labels.model
+just archive-pull --from 2026-11-01 --to 2026-11-07                 # .jsonl を temp/ai-logs-archive/ に作る
+just archive-pull --all                                             # 全日付を手元へ（バックアップ用）
+```
+
+- 範囲は `--date`・`--from`/`--to`（片方だけなら端はアーカイブの最初／最後の日付）・`--all` のどれか。`search` は `--since`/`--until`（ISO 日時。タイムゾーン無しは UTC、`--jst` なら JST）だけでもよい。`--grep` は本文（`line`）への正規表現、`--label` は完全一致で繰り返せる
+- 読むのは `_status/*.ok` がある日付だけ（無い日付は警告して飛ばす）。ダウンロード前に日数と合計サイズを表示する
+- キャッシュは `temp/ai-logs-archive/` の `yyyy-mm-dd.jsonl.gz` と `.etag`。Blob の ETag が変わった（`export --force` で上書きされた）日付だけ落とし直す。`search` は gz のまま読み、`.jsonl` は `pull` したときだけ作る
 
 ## 既知の注意点・ハマりどころ
 

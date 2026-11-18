@@ -93,7 +93,11 @@
 - <https://grafana.com/docs/loki/latest/reference/loki-http-api/> — `query_range` にカーソルは無い。`limit` 既定 100、サーバ天井 `max_entries_limit_per_query` 既定 5000。日次エクスポートは 1h スライスで繰り返す
 - <https://learn.microsoft.com/azure/storage/blobs/access-tiers-overview> — Hot / Cool / Archive。すぐローカル確認する用途では Archive の再ハイドレーションは向かない
 - <https://learn.microsoft.com/azure/storage/blobs/storage-blob-use-access-tier-python> — `upload_blob(..., standard_blob_tier=StandardBlobTier.COOL)`
-- <https://learn.microsoft.com/cli/azure/storage/account#az-storage-account-create> — 既定 SKU は `Standard_RAGRS`。個人利用は `--sku Standard_LRS` を必須にする
+- <https://learn.microsoft.com/cli/azure/storage/account#az-storage-account-create> — 既定 SKU は `Standard_RAGRS`。個人利用は `--sku Standard_LRS` を必須にする（旧 `archive-provision`。今は `terraform/archive/` で `account_replication_type = "LRS"`）
+- <https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/storage_account> — `azurerm_storage_account`。`access_tier` の既定は `Hot`（書かないと Cool → Hot に変わる）。`network_rules`・`blob_properties` は書かなければ実値を受け入れる。state にアカウントキーを持つ
+- <https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/storage_container> — `azurerm_storage_container`。v5 では `storage_account_id` のみ（`storage_account_name` は削除）。import ID は ARM ID（`.../blobServices/default/containers/<name>`）
+- <https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/guides/5.0-upgrade-guide> — v5 の変更（`resource_provider_registrations` の既定 `none` など）
+- <https://developer.hashicorp.com/terraform/language/import> — 設定ファイルの `import` ブロック。plan で取り込み結果を確認してから apply する。本基盤は apply 後に `imports.tf` を消した
 
 ## 次の詳細プラン作成時に見るべき順序（提案）
 

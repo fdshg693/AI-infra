@@ -10,5 +10,11 @@ terraform/*.tfvars
 terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.backup
+terraform/archive/*.tfvars
+terraform/archive/.terraform/
+terraform/archive/*.tfstate
+terraform/archive/*.tfstate.backup
+terraform/archive/generated.tf
+terraform/archive/*.tfplan
 
 .terraform/
