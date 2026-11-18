@@ -7,7 +7,7 @@ services:
       - .env   # OTLP_AUTH_TOKEN=<ランダムトークン> を記載。.gitignore対象、VM上にのみ置く
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
-    # 4317/4318 はホストに公開しない。外部からは caddy が TLS で受けてコンテナ間ネットワークで渡す
+    # 4317/4318 はホストに公開しない。外部からは caddy が 4318 を TLS で受けてコンテナ間ネットワークで渡す
     ports:
       - "127.0.0.1:13133:13133" # health_check（ホストのループバックのみ）
     healthcheck:
@@ -32,8 +32,7 @@ services:
       - caddy-config:/config
     ports:
       - "80:80"       # ACME HTTP-01（証明書の取得・更新）。閉じると更新できない
-      - "4317:4317"   # OTLP gRPC over TLS
-      - "4318:4318"   # OTLP HTTP over TLS
+      - "4318:4318"   # OTLP HTTP over TLS（gRPC の 4317 は公開しない。理由は Caddyfile）
     restart: unless-stopped
     depends_on:
       - otel-collector

@@ -95,7 +95,8 @@ verify-otlp-auth:
 
 # Show the OTLP TLS certificate (subject / issuer / expiry; Let's Encrypt shortlived, ~160h) and check plaintext no longer reaches the collector
 verify-tls:
-    @ip=$(terraform -chdir={{tf_dir}} output -raw server_ip_address); for port in 4317 4318; do echo "--- :$port"; echo | openssl s_client -connect $ip:$port -alpn h2 2>/dev/null | openssl x509 -noout -subject -issuer -enddate -ext subjectAltName; done
+    @ip=$(terraform -chdir={{tf_dir}} output -raw server_ip_address); echo "--- :4318"; echo | openssl s_client -connect $ip:4318 2>/dev/null | openssl x509 -noout -subject -issuer -enddate -ext subjectAltName
+    @echo "--- :4317 (expect a connection failure: gRPC is not exposed)"; curl -s -m 5 -o /dev/null -w "HTTP %{http_code}\n" http://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4317 || echo "connection failed as expected"
     @echo "--- plaintext http://<IP>:4318 (expect HTTP 400 from Caddy, not the collector's 401)"; curl -s -m 5 -o /dev/null -w "HTTP %{http_code}\n" http://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4318/v1/logs || echo "connection failed"
 
 # Verify Grafana's port 3000 is NOT reachable from outside the VM (expect a connection failure/timeout)

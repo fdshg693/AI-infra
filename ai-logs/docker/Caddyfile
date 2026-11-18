@@ -28,13 +28,10 @@
 	}
 }
 
-# OTLP gRPC (Claude Code). h2c keeps HTTP/2 to the collector; plain http:// would downgrade to HTTP/1.1 and break gRPC.
-https://{$SERVER_IP}:4317 {
-	import lets_encrypt_ip
-	reverse_proxy h2c://otel-collector:4317
-}
-
-# OTLP HTTP (verify_pipeline.sh / just verify-otlp-auth).
+# OTLP HTTP (Claude Code with http/protobuf, verify_pipeline.sh, just verify-otlp-auth).
+# gRPC (4317) is not exposed: Claude Code's gRPC exporter passes the IP as the TLS servername,
+# which Node rejects. If a gRPC client is ever needed, add a site with
+# `reverse_proxy h2c://otel-collector:4317` (h2c, not http://, or gRPC breaks) and publish 4317.
 https://{$SERVER_IP}:4318 {
 	import lets_encrypt_ip
 	reverse_proxy otel-collector:4318
