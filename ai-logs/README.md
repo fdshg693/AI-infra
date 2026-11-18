@@ -99,6 +99,8 @@ infra/ai-logs/
 
 - VM: 石狩第1ゾーン（`is1a`）、1 コア / 2GB プラン + SSD 20GB（月額 440円）で稼働中。OS は AlmaLinux 9
   - 2026-11-18 に 1GB（月額 1,540円）から 2GB に上げた。1GB では swap を常時約 400MB 使い、Loki の内部 gRPC に `DeadlineExceeded` が出ていた。`memory` の変更は in-place（`terraform plan` は 0 add / 1 change / 0 destroy）で、VM は停止・起動されるがディスクとグローバル IP はそのまま。サーバーのリソース ID だけ変わる
+  - 2GB では kernel の `crashkernel`（2G〜64G で 256M）が効くため、`free` の total は約 1.7GB になる
+  - OS 更新: 2026-11-18 に `dnf upgrade -y`（343 件、kernel 5.14.0-741.22.1）→ 再起動。5 コンテナは `restart: unless-stopped` で自動で戻り、`verify-tls` / `verify-otlp-auth` / `verify-client` も通った。openssh-server の更新で sshd が再起動され、`just ssh` 経由で流した `dnf` の SSH セッションは切れる（トランザクション自体は完了する）ので、長い更新は `nohup` か `tmux` で流す
 - Terraform provider は `sacloud/sakura`（v3系、Terraform Plugin Framework採用、Terraform 1.11以降が必要。適用時点の実績は 3.12.5）
   - `sacloud/sakuracloud`（v2系）は 2026-12-31 でメンテナンス終了予定（v2/v3に互換性なし）のため、最初からv3を採用した
   - リソース名は `sakuracloud_*` ではなく `sakura_*`（`sakura_server` / `sakura_disk`）。`network_interface` / `disk_edit_parameter` はオブジェクト構文（`= { ... }` / `= [{ ... }]`）
