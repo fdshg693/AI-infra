@@ -84,7 +84,7 @@ infra/ai-logs/
 │   ├── outputs.tf
 │   └── terraform.tfvars.example   # 実際の値は terraform.tfvars（gitignore対象）
 ├── scripts/
-│   ├── client_env.py          # ローカル開発マシン用の OTLP 環境変数を管理するスクリプト（justfileから呼ばれる）
+│   ├── client_env.py          # Claude Code の OTLP 設定を ~/.claude/settings.json（Windows・WSL）へ入れるスクリプト（justfileから呼ばれる）
 │   └── archive_azure.sh       # archive-provision / archive-env の az CLI 実体（ローカル実行。VM にはコピーしない）
 ├── justfile                   # Terraform・VMセットアップ・デプロイ・動作確認のレシピ集
 └── .env.example                # ローカル開発マシン用（SERVER_IP, OTLP_AUTH_TOKEN, Azure Blob）
@@ -119,7 +119,8 @@ Loki + Grafana + OTel Collector を 1コア/1GB の VM で同時稼働させる�
 ### Claude Code
 
 - `CLAUDE_CODE_ENABLE_TELEMETRY=1` で有効化。ログ送信は `OTEL_LOGS_EXPORTER=otlp` + `OTEL_EXPORTER_OTLP_ENDPOINT=http://<VMのIP>:4317` + `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` + `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>"`
-- このリポジトリでは上記環境変数一式を手動で書く代わりに、`infra/ai-logs/.env`（`SERVER_IP` / `OTLP_AUTH_TOKEN` を保持）を元に [`scripts/client_env.py`](scripts/client_env.py) が生成する。`just env-emit` / `just env-install` / `just env-purge` として呼び出す（詳細は下記「運用」参照）。`env-install`/`env-purge` はWindowsのユーザー環境変数（`HKCU\Environment`）を直接読み書きする方式で、シェルプロファイルへの追記ではないため、ターミナル経由ではなくスタートメニュー等からGUIで起動したアプリ（VS Codeなど）にも次回起動時から反映される
+- このリポジトリでは上記環境変数一式を手動で書く代わりに、`infra/ai-logs/.env`（`SERVER_IP` / `OTLP_AUTH_TOKEN` を保持）を元に [`scripts/client_env.py`](scripts/client_env.py) が生成する。`just env-emit` / `just env-install` / `just env-purge` として呼び出す（詳細は下記「運用」参照）。`env-install`/`env-purge` は `~/.claude/settings.json` の `env` キーにマージ／削除する（既存キーは保持し、書く前に `settings.json.ai-logs.bak` を残す。値は画面に出さない）。既定の `target=all` で Windows と WSL（既定 `Ubuntu-24.04`）の両方に入れる。WSL へは `wsl.exe` の標準入力で JSON を渡して WSL 側の `jq` でマージするので、トークンはコマンドライン引数に載らない
+- `~/.claude/settings.json` の `env` を使うのは、CLI と VS Code 拡張で共有され、起動のされ方に関係なく効くため。以前の版が書いていた Windows ユーザー環境変数は、VS Code の起動のされ方次第で拡張に届かず、WSL にも伝わらなかった。`env-install` / `env-purge` は旧方式のユーザー環境変数が残っていれば消す
 - 注意点: `OTEL_*` 系の環境変数は Bash ツールや hook・MCP サーバーなどの子プロセスには伝播しない（Claude Code CLI 自身のイベントのみが対象）
 - Loki に取り込まれた際にインデックス化されるラベルは `service_name`（値は `claude-code`）のみ。`claude_code.user_prompt` / `claude_code.api_request` 等の `event_name`、`session_id`、`model` などはインデックス化されない属性（structured metadata）としてクエリ可能
 
@@ -149,31 +150,31 @@ headers = { "Authorization" = "Bearer <OTLP_AUTH_TOKENの値>" }
 
 `cd infra/ai-logs` してから実行する（`just -f infra/ai-logs/justfile <recipe>` でリポジトリルートから直接呼ぶことも可能）。
 
-| レシピ                          | 内容                                                                                                                                                                                                |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just tf-init`                  | `terraform init`                                                                                                                                                                                    |
-| `just tf-plan`                  | `terraform plan`                                                                                                                                                                                    |
-| `just tf-apply`                 | `terraform apply`                                                                                                                                                                                   |
-| `just tf-destroy`               | `terraform destroy`                                                                                                                                                                                 |
-| `just ip`                       | VMのグローバルIPを表示                                                                                                                                                                              |
-| `just ssh`                      | VMにSSH接続                                                                                                                                                                                         |
-| `just provision`                | VM上にDocker / Docker Composeをインストール（初回のみ、冪等）                                                                                                                                       |
-| `just vm-env`                   | VM上に `/opt/ai-logs/.env` を生成（既存があれば何もしない）                                                                                                                                         |
-| `just deploy`                   | `docker/` をVMへ転送し `docker compose up -d --build`（ローカル `docker/.env` は載せない。VM の `.env` は上書きしない。`loki-config.yaml` を変えたときは別途 `docker compose restart loki` が必要） |
-| `just archive-provision`        | Azure にアーカイブ用 RG + LRS Cool ストレージアカウント + コンテナを作成（skills-site の SWA 用 RG とは別）                                                                                         |
-| `just archive-env`              | 既存の VM `/opt/ai-logs/.env` とローカル `.env` へ Blob 接続文字列を追記（`vm-env` は既存ファイルを触らない）                                                                                       |
-| `just archive-export <date>`    | VM 上で 1 UTC 日分をワンショット export（`docker compose run --rm`）                                                                                                                                |
-| `just archive-backfill [... ]`  | VM 上で既存 Loki ログを日付単位でバックフィル（直列。`--from` / `--to` を渡せる）                                                                                                                   |
-| `just archive-list`             | ローカルから Blob の日付と `_status` マーカーを一覧                                                                                                                                                 |
-| `just archive-pull <date>`      | ローカルの `temp/ai-logs-archive/` へ 1 UTC 日分を落とす（gitignore 済み。リポジトリにログ本文を入れない）                                                                                          |
-| `just show-secrets`             | VM上の `/opt/ai-logs/.env` の中身を表示                                                                                                                                                             |
-| `just tunnel [local] [remote]`  | SSHトンネル（既定は Grafana の `localhost:3000`）。例: `just tunnel 3001`（ローカルだけ変更）、`just tunnel 4318 4318`                                                                              |
-| `just stats`                    | VM上の `docker stats --no-stream`                                                                                                                                                                   |
-| `just verify-otlp-auth`         | OTLPエンドポイントのトークン必須化を確認（401期待）                                                                                                                                                 |
-| `just verify-grafana-private`   | Grafanaが外部非公開であることを確認                                                                                                                                                                 |
-| `just env-emit [bash\|pwsh]`    | Claude Code用OTLP環境変数をCURRENTシェル向けに出力（一時追加、evalして使う）                                                                                                                        |
-| `just env-install [bash\|pwsh]` | 上記をWindowsユーザー環境変数として設定（永続追加）                                                                                                                                                 |
-| `just env-purge [bash\|pwsh]`   | 上記のWindowsユーザー環境変数を削除（パージ）、CURRENTシェル向けのunset文も出力                                                                                                                     |
+| レシピ                               | 内容                                                                                                                                                                                                |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just tf-init`                       | `terraform init`                                                                                                                                                                                    |
+| `just tf-plan`                       | `terraform plan`                                                                                                                                                                                    |
+| `just tf-apply`                      | `terraform apply`                                                                                                                                                                                   |
+| `just tf-destroy`                    | `terraform destroy`                                                                                                                                                                                 |
+| `just ip`                            | VMのグローバルIPを表示                                                                                                                                                                              |
+| `just ssh`                           | VMにSSH接続                                                                                                                                                                                         |
+| `just provision`                     | VM上にDocker / Docker Composeをインストール（初回のみ、冪等）                                                                                                                                       |
+| `just vm-env`                        | VM上に `/opt/ai-logs/.env` を生成（既存があれば何もしない）                                                                                                                                         |
+| `just deploy`                        | `docker/` をVMへ転送し `docker compose up -d --build`（ローカル `docker/.env` は載せない。VM の `.env` は上書きしない。`loki-config.yaml` を変えたときは別途 `docker compose restart loki` が必要） |
+| `just archive-provision`             | Azure にアーカイブ用 RG + LRS Cool ストレージアカウント + コンテナを作成（skills-site の SWA 用 RG とは別）                                                                                         |
+| `just archive-env`                   | 既存の VM `/opt/ai-logs/.env` とローカル `.env` へ Blob 接続文字列を追記（`vm-env` は既存ファイルを触らない）                                                                                       |
+| `just archive-export <date>`         | VM 上で 1 UTC 日分をワンショット export（`docker compose run --rm`）                                                                                                                                |
+| `just archive-backfill [... ]`       | VM 上で既存 Loki ログを日付単位でバックフィル（直列。`--from` / `--to` を渡せる）                                                                                                                   |
+| `just archive-list`                  | ローカルから Blob の日付と `_status` マーカーを一覧                                                                                                                                                 |
+| `just archive-pull <date>`           | ローカルの `temp/ai-logs-archive/` へ 1 UTC 日分を落とす（gitignore 済み。リポジトリにログ本文を入れない）                                                                                          |
+| `just show-secrets`                  | VM上の `/opt/ai-logs/.env` の中身を表示                                                                                                                                                             |
+| `just tunnel [local] [remote]`       | SSHトンネル（既定は Grafana の `localhost:3000`）。例: `just tunnel 3001`（ローカルだけ変更）、`just tunnel 4318 4318`                                                                              |
+| `just stats`                         | VM上の `docker stats --no-stream`                                                                                                                                                                   |
+| `just verify-otlp-auth`              | OTLPエンドポイントのトークン必須化を確認（401期待）                                                                                                                                                 |
+| `just verify-grafana-private`        | Grafanaが外部非公開であることを確認                                                                                                                                                                 |
+| `just env-emit [bash\|pwsh]`         | Claude Code用OTLP環境変数をCURRENTシェル向けに出力（一時追加、evalして使う）                                                                                                                        |
+| `just env-install [target] [distro]` | 上記を `~/.claude/settings.json` の `env` にマージ（永続追加。target は `all`（既定）/ `windows` / `wsl`、distro の既定は `Ubuntu-24.04`）                                                          |
+| `just env-purge [target] [distro]`   | 上記のキーを `~/.claude/settings.json` の `env` から削除（パージ。旧方式の Windows ユーザー環境変数も消す）                                                                                         |
 
 ### 初期構築・再デプロイの流れ
 
@@ -184,7 +185,7 @@ headers = { "Authorization" = "Bearer <OTLP_AUTH_TOKENの値>" }
 5. `just provision` でDocker導入 → `just vm-env` で `.env`（`OTLP_AUTH_TOKEN` / `GRAFANA_ADMIN_PASSWORD`）を生成 → `just deploy` で `docker/` を配置・起動
 6. `just verify-otlp-auth` / `just verify-grafana-private` / `just stats` で動作確認
 7. `just tunnel` を張った状態で `just show-secrets` を確認しつつ <http://localhost:3000> にログイン
-8. ローカル開発マシン側: `infra/ai-logs/.env` を `.env.example` からコピーし、`just ip` / `just show-secrets` の値を埋めたうえで `just env-install [bash|pwsh]`（Claude Code用）、Codex CLIは `~/.codex/config.toml` を手動編集
+8. ローカル開発マシン側: `infra/ai-logs/.env` を `.env.example` からコピーし、`just ip` / `just show-secrets` の値を埋めたうえで `just env-install`（Claude Code用。Windows と WSL）、Codex CLIは `~/.codex/config.toml` を手動編集
 9. アーカイブ: `just archive-provision` → `just archive-env` → `just deploy` → `just archive-backfill` → `just archive-list`（詳細は上記「アーカイブの使い方」）
 
 `docker/` の内容を更新した場合は `just deploy` を再実行するだけでよい（ローカルの `docker/.env` は転送せず、VM 上の `/opt/ai-logs/.env` は上書きしない）。ただし `loki-config.yaml` のような bind mount された設定ファイルだけの変更では Compose がコンテナを再作成しないため、`docker compose restart loki` を別途実行する。`archive-exporter` は Dockerfile があるので、スクリプトや依存を変えたあとの `deploy` はイメージをビルドし直す。
@@ -235,7 +236,7 @@ Loki の保持は `docker/loki-config.yaml` の `compactor` + `limits_config` �
 
 ## 既知の注意点・ハマりどころ
 
-- `just env-install` はWindowsユーザー環境変数を設定するが、**既に起動済みのプロセス**（開きっぱなしのVS Codeウィンドウ、実行中の `claude` 等）には反映されない。環境変数はプロセス生成時にしか継承されないため、設定後は対象アプリを完全に終了して起動し直す必要がある（VS Codeの場合は「ウィンドウの再読み込み」では不十分で、アプリ自体の終了・再起動が必要）
+- `just env-install` で書いた `~/.claude/settings.json` の `env` は、Claude Code のセッション開始時に読まれる。**実行中のセッション**（開きっぱなしの VS Code の Claude Code、実行中の `claude`）には反映されないので、セッションを開き直す
 - Claude Codeの `OTEL_*` 環境変数は、Bashツール・hook・MCPサーバーなど子プロセスには伝播しない（CLI本体のイベントのみ計装対象）
 - Codex CLIの `endpoint` は信号別パス（`/v1/logs`）まで明示しないと404になる（上記「Codex CLI」参照）
 - 1コア/1GBプランでは `dnf install` の依存解決だけでOOM Killed（exit 137）になることがあるため、`just provision` は先にswapfile（1GB）を作成してから `dnf` を実行する

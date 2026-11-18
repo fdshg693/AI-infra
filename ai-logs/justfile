@@ -133,12 +133,12 @@ archive-pull date:
 env-emit shell="pwsh":
     @python {{scripts_dir}}/client_env.py emit --shell {{shell}}
 
-# Set the Claude Code OTLP env vars as persistent Windows User environment variables
-# (applies to any newly-started process, e.g. VS Code opened from the Start Menu -- unlike a shell profile).
-# Already-running apps (an open VS Code window, an already-running `claude`) must be restarted to pick it up.
-env-install shell="pwsh":
-    @python {{scripts_dir}}/client_env.py install --shell {{shell}}
+# Merge the Claude Code OTLP env vars into the "env" key of ~/.claude/settings.json (shared by the CLI and the VS Code extension).
+# target: all (Windows + WSL) | windows | wsl. distro: the WSL distro. Also deletes the legacy Windows User env vars.
+# Running Claude Code sessions (an open VS Code window, a running `claude`) must be restarted to pick it up.
+env-install target="all" distro="Ubuntu-24.04":
+    @python {{scripts_dir}}/client_env.py install --target {{target}} --distro {{distro}}
 
-# Remove the Claude Code OTLP env vars from the Windows User environment, and print unset statements for the CURRENT shell
-env-purge shell="pwsh":
-    @python {{scripts_dir}}/client_env.py purge --shell {{shell}}
+# Remove those keys from ~/.claude/settings.json on the target(s) (and the legacy Windows User env vars)
+env-purge target="all" distro="Ubuntu-24.04":
+    @python {{scripts_dir}}/client_env.py purge --target {{target}} --distro {{distro}}
