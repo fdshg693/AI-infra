@@ -1,0 +1,11 @@
+# cp terraform.tfvars.example terraform.tfvars して値を埋める。
+# terraform.tfvars 自体は .gitignore 対象なのでコミットしないこと。
+
+# `az account show --query id -o tsv` の値
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# グローバルに一意なストレージアカウント名（小文字英数字 3〜24 文字）
+storage_account_name = "stailogsexample"
+
+# resource_group_name（既定 rg-ai-logs-archive）・container_name（既定 ai-logs）・location（既定 japaneast）は
+# 既定のままで良ければ省略可

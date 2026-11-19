@@ -21,8 +21,8 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/ai_logs_ed25519}"
 MARKER="pipeline-check-$(date +%s)"
 NOW_NS=$(( $(date +%s) * 1000000000 ))
 
-echo "[1/2] sending synthetic OTLP log to http://${SERVER_IP}:4318/v1/logs (service_name=${MARKER}) ..."
-HTTP_CODE=$(curl -s -o /tmp/verify_pipeline_resp.txt -w "%{http_code}" -X POST "http://${SERVER_IP}:4318/v1/logs" \
+echo "[1/2] sending synthetic OTLP log to https://${SERVER_IP}:4318/v1/logs (service_name=${MARKER}) ..."
+HTTP_CODE=$(curl -s -o /tmp/verify_pipeline_resp.txt -w "%{http_code}" -X POST "https://${SERVER_IP}:4318/v1/logs" \
     -H 'Content-Type: application/json' \
     -H "Authorization: Bearer ${OTLP_AUTH_TOKEN}" \
     -d "{

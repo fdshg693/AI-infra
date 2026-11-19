@@ -1,0 +1,38 @@
+# TLS terminator for the public OTLP endpoints.
+# Caddy obtains a Let's Encrypt IP-address certificate (shortlived profile, 160h; IP
+# certificates are only issued under that profile) via the HTTP-01 challenge on port 80,
+# then forwards plaintext to the collector over the compose network only.
+# Auth stays in the collector (bearertokenauth); Caddy does not look at the token.
+#
+# SERVER_IP: written into /opt/ai-logs/.env by `just deploy`.
+# ACME_CA:   production by default. Set ACME_CA to the staging directory in the VM .env
+#            when experimenting, to stay clear of the production rate limits.
+{
+	acme_ca {$ACME_CA}
+	# Clients connecting to an IP send no SNI, and inside the container the local address is the
+	# compose network IP, not the public one. Without this Caddy finds no certificate and the
+	# handshake fails.
+	default_sni {$SERVER_IP}
+	servers {
+		protocols h1 h2
+	}
+}
+
+(lets_encrypt_ip) {
+	tls {
+		issuer acme {
+			profile shortlived
+			# IP certificates support http-01 and tls-alpn-01 only; tls-alpn-01 needs 443.
+			disable_tlsalpn_challenge
+		}
+	}
+}
+
+# OTLP HTTP (Claude Code with http/protobuf, verify_pipeline.sh, just verify-otlp-auth).
+# gRPC (4317) is not exposed: Claude Code's gRPC exporter passes the IP as the TLS servername,
+# which Node rejects. If a gRPC client is ever needed, add a site with
+# `reverse_proxy h2c://otel-collector:4317` (h2c, not http://, or gRPC breaks) and publish 4317.
+https://{$SERVER_IP}:4318 {
+	import lets_encrypt_ip
+	reverse_proxy otel-collector:4318
+}

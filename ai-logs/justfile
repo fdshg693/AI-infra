@@ -9,11 +9,10 @@ docker_dir := "docker"
 scripts_dir := "scripts"
 ssh_key := "~/.ssh/ai_logs_ed25519"
 archive_script := docker_dir + "/archive-exporter/archive_logs.py"
-# Azure Blob archive. Do NOT use the skills-site SWA RG (rg-ai-skill-catalog).
-archive_rg := env_var_or_default("AI_LOGS_ARCHIVE_RG", "rg-ai-logs-archive")
-archive_account := env_var_or_default("AI_LOGS_ARCHIVE_ACCOUNT", "stailogsfdshg693")
-archive_container := env_var_or_default("AI_LOGS_ARCHIVE_CONTAINER", "ai-logs")
-archive_location := env_var_or_default("AI_LOGS_ARCHIVE_LOCATION", "japaneast")
+archive_reqs := docker_dir + "/archive-exporter/requirements.txt"
+# Azure Blob archive resources live in their own root module/state (needs `az login`, not the sakura API key),
+# so `just tf-destroy` never touches the archive. Prereq: terraform/archive/terraform.tfvars.
+archive_tf_dir := tf_dir + "/archive"
 
 # List available recipes
 default:
@@ -53,16 +52,17 @@ provision:
 vm-env:
     ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) 'mkdir -p /opt/ai-logs && cd /opt/ai-logs && if [ ! -f .env ]; then echo "OTLP_AUTH_TOKEN=$(openssl rand -hex 32)" > .env && echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 18)" >> .env && echo "Generated new .env on the VM."; else echo ".env already exists on the VM, leaving it as-is."; fi'
 
-# Copy docker/ to the VM (staging dir; drop any local .env before merge so /opt/ai-logs/.env is kept) and start the stack
+# Copy docker/ to the VM (staging dir; drop any local .env before merge so /opt/ai-logs/.env is kept) and start the stack.
+# Also (re)writes SERVER_IP=<VM IP> in /opt/ai-logs/.env; Caddy uses it as the IP address on its certificate.
 deploy:
     scp -i {{ssh_key}} -r {{docker_dir}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address):/tmp/ai-logs-docker
-    ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) 'mkdir -p /opt/ai-logs && rm -f /tmp/ai-logs-docker/.env && cp -rf /tmp/ai-logs-docker/. /opt/ai-logs/ && rm -rf /tmp/ai-logs-docker && cd /opt/ai-logs && docker compose up -d --build'
+    ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) 'mkdir -p /opt/ai-logs && rm -f /tmp/ai-logs-docker/.env && cp -rf /tmp/ai-logs-docker/. /opt/ai-logs/ && rm -rf /tmp/ai-logs-docker && cd /opt/ai-logs && touch .env && sed -i "/^SERVER_IP=/d" .env && echo "SERVER_IP='"$(terraform -chdir={{tf_dir}} output -raw server_ip_address)"'" >> .env && docker compose up -d --build'
 
 # Show the generated secrets stored in /opt/ai-logs/.env on the VM
 show-secrets:
     ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) "cat /opt/ai-logs/.env"
 
-# SSH tunnel (foreground; Ctrl+C to stop). Default Grafana at localhost:3000. Args: [local] [remote] (e.g. `just tunnel 3001` or `just tunnel 4318 4318`)
+# SSH tunnel (foreground; Ctrl+C to stop). Default Grafana at localhost:3000. Args: [local] [remote] (e.g. `just tunnel 3001`)
 tunnel local="3000" remote="3000":
     @echo "Forwarding localhost:{{local}} -> VM localhost:{{remote}} (Ctrl+C to stop)"
     ssh -i {{ssh_key}} -N -L {{local}}:localhost:{{remote}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address)
@@ -89,7 +89,13 @@ verify-client:
 
 # Verify the OTLP endpoint rejects requests without a bearer token (expect HTTP 401)
 verify-otlp-auth:
-    curl -s -o /dev/null -w "HTTP %{http_code} (expect 401)\n" http://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4318/v1/logs
+    curl -s -o /dev/null -w "HTTP %{http_code} (expect 401)\n" https://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4318/v1/logs
+
+# Show the OTLP TLS certificate (subject / issuer / expiry; Let's Encrypt shortlived, ~160h) and check plaintext no longer reaches the collector
+verify-tls:
+    @ip=$(terraform -chdir={{tf_dir}} output -raw server_ip_address); echo "--- :4318"; echo | openssl s_client -connect $ip:4318 2>/dev/null | openssl x509 -noout -subject -issuer -enddate -ext subjectAltName
+    @echo "--- :4317 (expect a connection failure: gRPC is not exposed)"; curl -s -m 5 -o /dev/null -w "HTTP %{http_code}\n" http://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4317 || echo "connection failed as expected"
+    @echo "--- plaintext http://<IP>:4318 (expect HTTP 400 from Caddy, not the collector's 401)"; curl -s -m 5 -o /dev/null -w "HTTP %{http_code}\n" http://$(terraform -chdir={{tf_dir}} output -raw server_ip_address):4318/v1/logs || echo "connection failed"
 
 # Verify Grafana's port 3000 is NOT reachable from outside the VM (expect a connection failure/timeout)
 verify-grafana-private:
@@ -97,15 +103,23 @@ verify-grafana-private:
 
 # --- Azure Blob archive (Loki filesystem stays hot; Blob is a daily gzip JSONL copy) ---
 # Dates are UTC. JST "yesterday" is 9 hours ahead of the UTC date used here.
-# Resource group is rg-ai-logs-archive, not the skills-site SWA RG.
+# Azure resources are defined in terraform/archive/ (do not change them with az directly).
 
-# Create the archive resource group, LRS Cool storage account, and container
-archive-provision:
-    bash {{scripts_dir}}/archive_azure.sh provision "{{archive_rg}}" "{{archive_account}}" "{{archive_container}}" "{{archive_location}}"
+# Terraform (Azure archive): init the terraform/archive root module
+archive-tf-init:
+    terraform -chdir={{archive_tf_dir}} init
 
-# Append/refresh Blob connection settings on the VM (/opt/ai-logs/.env) and in local .env
+# Terraform (Azure archive): show planned changes (apply only when it says "0 to destroy")
+archive-tf-plan:
+    terraform -chdir={{archive_tf_dir}} plan
+
+# Terraform (Azure archive): apply (RG + LRS Cool storage account + container; account/container have prevent_destroy)
+archive-tf-apply:
+    terraform -chdir={{archive_tf_dir}} apply
+
+# Append/refresh Blob connection settings on the VM (/opt/ai-logs/.env) and in local .env, from the terraform/archive outputs
 archive-env:
-    bash {{scripts_dir}}/archive_azure.sh env "{{archive_rg}}" "{{archive_container}}" "{{ssh_key}}" "{{tf_dir}}"
+    terraform -chdir={{archive_tf_dir}} output -raw primary_connection_string | bash {{scripts_dir}}/archive_azure.sh env "$(terraform -chdir={{archive_tf_dir}} output -raw container_name)" "{{ssh_key}}" "{{tf_dir}}"
 
 # One-shot export of one UTC date on the VM (e.g. `just archive-export 2026-09-11`)
 archive-export date:
@@ -115,13 +129,23 @@ archive-export date:
 archive-backfill *args:
     ssh -i {{ssh_key}} root@$(terraform -chdir={{tf_dir}} output -raw server_ip_address) "cd /opt/ai-logs && docker compose run --rm archive-exporter backfill {{args}}"
 
-# List archived UTC dates and _status markers (local; needs azure-storage-blob)
-archive-list:
-    uv run python {{archive_script}} list
+# List archived UTC dates, _status markers and sizes (local; uv pulls in azure-storage-blob on the fly)
+# e.g. `just archive-list --from 2026-11-01`
+[positional-arguments]
+archive-list *args:
+    uv run --with-requirements {{archive_reqs}} python {{archive_script}} list "$@"
 
-# Download one UTC date into temp/ai-logs-archive/ as .jsonl (local). e.g. `just archive-pull 2026-09-11`
-archive-pull date:
-    uv run python {{archive_script}} pull --date {{date}}
+# Download UTC dates into temp/ai-logs-archive/ (gz cached by ETag, plus .jsonl) (local)
+# e.g. `just archive-pull 2026-09-11`, `just archive-pull --from 2026-11-01 --to 2026-11-07`, `just archive-pull --all`
+[positional-arguments]
+archive-pull *args:
+    if [ "$#" -eq 1 ] && [ "${1#-}" = "$1" ]; then set -- --date "$1"; fi; uv run --with-requirements {{archive_reqs}} python {{archive_script}} pull "$@"
+
+# Search archived logs via the local cache (local). Args pass through to `archive_logs.py search`
+# e.g. `just archive-search --jst --date 2026-11-17 --grep 'api_request|tool_result'`, `just archive-search --all --json | jq .labels.event_name`
+[positional-arguments]
+archive-search *args:
+    uv run --with-requirements {{archive_reqs}} python {{archive_script}} search "$@"
 
 # --- Local dev machine client env (Claude Code OTLP export) ---
 # Prereq: .env must exist in this directory with SERVER_IP / OTLP_AUTH_TOKEN filled in
@@ -132,12 +156,12 @@ archive-pull date:
 env-emit shell="pwsh":
     @python {{scripts_dir}}/client_env.py emit --shell {{shell}}
 
-# Set the Claude Code OTLP env vars as persistent Windows User environment variables
-# (applies to any newly-started process, e.g. VS Code opened from the Start Menu -- unlike a shell profile).
-# Already-running apps (an open VS Code window, an already-running `claude`) must be restarted to pick it up.
-env-install shell="pwsh":
-    @python {{scripts_dir}}/client_env.py install --shell {{shell}}
+# Merge the Claude Code OTLP env vars into the "env" key of ~/.claude/settings.json (shared by the CLI and the VS Code extension).
+# target: all (Windows + WSL) | windows | wsl. distro: the WSL distro. Also deletes the legacy Windows User env vars.
+# Running Claude Code sessions (an open VS Code window, a running `claude`) must be restarted to pick it up.
+env-install target="all" distro="Ubuntu-24.04":
+    @python {{scripts_dir}}/client_env.py install --target {{target}} --distro {{distro}}
 
-# Remove the Claude Code OTLP env vars from the Windows User environment, and print unset statements for the CURRENT shell
-env-purge shell="pwsh":
-    @python {{scripts_dir}}/client_env.py purge --shell {{shell}}
+# Remove those keys from ~/.claude/settings.json on the target(s) (and the legacy Windows User env vars)
+env-purge target="all" distro="Ubuntu-24.04":
+    @python {{scripts_dir}}/client_env.py purge --target {{target}} --distro {{distro}}

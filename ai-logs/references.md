@@ -13,6 +13,9 @@
   - メトリクス8種（`claude_code.session.count`, `claude_code.token.usage`, `claude_code.cost.usage` 等）、イベント20種超（`claude_code.user_prompt`, `claude_code.tool_result`, `claude_code.mcp_server_connection` 等）の一覧はリポジトリ内 [`skills/plugins/cc-knowledge/skills/claude-code-debugging/otel-reference.md`](../../skills/plugins/cc-knowledge/skills/claude-code-debugging/otel-reference.md) に整理済み
   - **注意**: `OTEL_*` 環境変数は Bash ツール・hook・MCP サーバーなどの子プロセスには伝播しない（CLI本体のイベントのみ計装される）
   - 組織全体へ強制するには managed settings の `env` キーを使う（個人利用の本基盤では未使用）
+  - 2026-11-18 再確認（Claude Code 2.1.325）: 公式の Monitoring 節を `skills/plugins/cc-knowledge/skills/claude-code-docs/output/llms-full.txt`（2026-11-17 取得）で読み、Loki の実データと照合した。本基盤で何が届くかは [docs/telemetry-data.md](docs/telemetry-data.md)、クライアント設定は [docs/client-setup.md](docs/client-setup.md)
+  - `~/.claude/settings.json` の `env` は CLI と VS Code 拡張で共有され、プロセスの環境変数より優先される。VS Code 拡張の `claudeCode.environmentVariables` について公式は「共有設定は Claude Code settings を使う」としている
+  - 本文・ツール詳細の既定の伏せ方（`<REDACTED>`、`custom` / `mcp` / `mcp_tool` のプレースホルダ、`mcp_server_connection` の `server_name` 省略）と `OTEL_METRICS_INCLUDE_*` がイベントにも効く点は同じ節の "Security and privacy" / "Detailed MCP logging" / "Cardinality" の各項
 
 ## Codex CLI の OTel テレメトリ
 
@@ -42,6 +45,16 @@
 - <https://github.com/github/copilot-cli/issues/2471> — 「Claude Codeとの機能パリティが欲しい」というfeature request。自律的なheadless実行時の実行履歴確認ニーズが背景
 - <https://docs.github.com/en/copilot/how-tos/administer-copilot/manage-for-enterprise/review-audit-logs> — 公式ドキュメント。組織のAudit Logは Enterprise/Business プラン前提、かつ**ローカルのプロンプト内容は含まれない**（別途カスタムhookでの送信が必要と明記）。保持期間180日、SIEMへのストリーミング推奨
 - <https://github.com/orgs/community/discussions/190671> — Audit Log APIの実務的な使い方（`action:copilot` フィルタ、CSV export、REST API取得例）
+
+## OTLP の TLS 化（Let's Encrypt の IP 証明書 + Caddy）
+
+2026-11-18 調査・導入。
+
+- <https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability> — 6 日（160 時間）証明書と IP アドレス証明書が 2026-01-15 に GA。`shortlived` プロファイルを選ぶ
+- <https://letsencrypt.org/2025/01/16/6-day-and-ip-certs> — IP 証明書の検証は http-01 と tls-alpn-01 だけ（dns-01 不可）。本基盤は http-01（80 番）
+- <https://caddy.community/t/shortlived-certificates-from-lets-encrypt/33399> — Caddy で `issuer acme { profile shortlived }` を指定する方法
+- <https://github.com/caddyserver/caddy/issues/7399> — Caddy の公的 IP 証明書の対応状況（v2.10.0 は拒否、以降の版で IPv4 は取得可）。本基盤は 2.11.9 を固定
+- Claude Code の gRPC エクスポータは IP 宛ての TLS で失敗する（grpc-js が IP を servername に渡し Node が拒否）ため、OTLP/HTTP にした。経緯は [docs/client-setup.md](docs/client-setup.md#なぜ-otlphttp-か)
 
 ## さくらのクラウド VM 料金
 
@@ -80,7 +93,11 @@
 - <https://grafana.com/docs/loki/latest/reference/loki-http-api/> — `query_range` にカーソルは無い。`limit` 既定 100、サーバ天井 `max_entries_limit_per_query` 既定 5000。日次エクスポートは 1h スライスで繰り返す
 - <https://learn.microsoft.com/azure/storage/blobs/access-tiers-overview> — Hot / Cool / Archive。すぐローカル確認する用途では Archive の再ハイドレーションは向かない
 - <https://learn.microsoft.com/azure/storage/blobs/storage-blob-use-access-tier-python> — `upload_blob(..., standard_blob_tier=StandardBlobTier.COOL)`
-- <https://learn.microsoft.com/cli/azure/storage/account#az-storage-account-create> — 既定 SKU は `Standard_RAGRS`。個人利用は `--sku Standard_LRS` を必須にする
+- <https://learn.microsoft.com/cli/azure/storage/account#az-storage-account-create> — 既定 SKU は `Standard_RAGRS`。個人利用は `--sku Standard_LRS` を必須にする（旧 `archive-provision`。今は `terraform/archive/` で `account_replication_type = "LRS"`）
+- <https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/storage_account> — `azurerm_storage_account`。`access_tier` の既定は `Hot`（書かないと Cool → Hot に変わる）。`network_rules`・`blob_properties` は書かなければ実値を受け入れる。state にアカウントキーを持つ
+- <https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/storage_container> — `azurerm_storage_container`。v5 では `storage_account_id` のみ（`storage_account_name` は削除）。import ID は ARM ID（`.../blobServices/default/containers/<name>`）
+- <https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/guides/5.0-upgrade-guide> — v5 の変更（`resource_provider_registrations` の既定 `none` など）
+- <https://developer.hashicorp.com/terraform/language/import> — 設定ファイルの `import` ブロック。plan で取り込み結果を確認してから apply する。本基盤は apply 後に `imports.tf` を消した
 
 ## 次の詳細プラン作成時に見るべき順序（提案）
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Local Azure helpers for ai-logs Blob archive. Invoked from the justfile.
-# Does not use the skills-site SWA resource group (rg-ai-skill-catalog).
+# Writes the ai-logs Blob archive connection settings to the VM and local .env. Invoked from the justfile.
+# The Azure resources are created by terraform/archive/ (formerly `provision` here, via az CLI).
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 provision <rg> <account> <container> <location>" >&2
-  echo "       $0 env <rg> <container> <ssh_key> <tf_dir>" >&2
+  echo "usage: <connection string on stdin> | $0 env <container> <ssh_key> <tf_dir>" >&2
+  echo "       (the Azure resources themselves are managed by terraform/archive/; see just archive-env)" >&2
   exit 2
 }
 
@@ -13,51 +13,17 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
-  provision)
-    [ "$#" -eq 4 ] || usage
-    RG="$1"
-    ACCOUNT="$2"
-    CONTAINER="$3"
-    LOCATION="$4"
-    echo "Using resource group $RG in $LOCATION (not rg-ai-skill-catalog)"
-    az group create --name "$RG" --location "$LOCATION" --tags application=ai-logs managedBy=az-cli
-    EXISTING="$(az storage account list --resource-group "$RG" --query "[0].name" -o tsv)"
-    if [ -n "$EXISTING" ]; then
-      ACCOUNT="$EXISTING"
-      echo "Reusing storage account $ACCOUNT in $RG"
-    else
-      AVAIL="$(az storage account check-name --name "$ACCOUNT" --query nameAvailable -o tsv)"
-      if [ "$AVAIL" != "true" ]; then
-        ACCOUNT="stailogs$(openssl rand -hex 4)"
-        echo "Default account name is taken; using $ACCOUNT"
-      fi
-      az storage account create \
-        --name "$ACCOUNT" \
-        --resource-group "$RG" \
-        --location "$LOCATION" \
-        --sku Standard_LRS \
-        --kind StorageV2 \
-        --access-tier Cool \
-        --min-tls-version TLS1_2 \
-        --allow-blob-public-access false \
-        --tags application=ai-logs managedBy=az-cli
-    fi
-    az storage container create --account-name "$ACCOUNT" --name "$CONTAINER" --auth-mode login
-    echo "Done. account=$ACCOUNT container=$CONTAINER"
-    echo "Next: just archive-env"
-    ;;
   env)
-    [ "$#" -eq 4 ] || usage
-    RG="$1"
-    CONTAINER="$2"
-    SSH_KEY="$3"
-    TF_DIR="$4"
-    ACCOUNT="$(az storage account list --resource-group "$RG" --query "[0].name" -o tsv)"
-    if [ -z "$ACCOUNT" ]; then
-      echo "error: no storage account in $RG (run just archive-provision first)" >&2
+    [ "$#" -eq 3 ] || usage
+    CONTAINER="$1"
+    SSH_KEY="$2"
+    TF_DIR="$3"
+    # The connection string comes on stdin (not argv) so it never shows up in the process list.
+    IFS= read -r CONN || true
+    if [ -z "$CONN" ]; then
+      echo "error: empty connection string on stdin (run just archive-tf-apply first)" >&2
       exit 1
     fi
-    CONN="$(az storage account show-connection-string --name "$ACCOUNT" --resource-group "$RG" -o tsv)"
     SNAP="$(mktemp)"
     cleanup() { rm -f "$SNAP"; }
     trap cleanup EXIT
